@@ -15,7 +15,7 @@ import (
 
 const usage = `Usage:
   kibana-degradation-runner validate <scenario.yml>
-  kibana-degradation-runner up <scenario.yml>
+  kibana-degradation-runner up <scenario.yml> [--kibana-dir <path>]
   kibana-degradation-runner --help`
 
 const (
@@ -23,6 +23,8 @@ const (
 	exitFailure          = 1
 	exitInvalidArguments = 2
 )
+
+const kibanaDirectoryOption = "--kibana-dir"
 
 const (
 	coordinatorHTTPPort      = 9200
@@ -68,26 +70,56 @@ func run(args []string) int {
 			return exitInvalidArguments
 		}
 
-		if len(args) > 2 {
+		scenarioPath := args[1]
+		options := args[2:]
+
+		if command == "validate" && len(options) > 0 {
 			fmt.Fprintf(os.Stderr, "unexpected arguments for %s\n", command)
 			fmt.Fprintln(os.Stderr, usage)
 
 			return exitInvalidArguments
 		}
 
-		scenarioPath := args[1]
-
 		if command == "validate" {
 			return runValidateCommand(scenarioPath)
 		}
 
-		return runUpCommand(scenarioPath)
+		kibanaDirectory, optionsError := parseUpOptions(options)
+		if optionsError != nil {
+			fmt.Fprintln(os.Stderr, optionsError)
+			fmt.Fprintln(os.Stderr, usage)
+
+			return exitInvalidArguments
+		}
+
+		return runUpCommand(scenarioPath, kibanaDirectory)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", command)
 		fmt.Fprintln(os.Stderr, usage)
 
 		return exitInvalidArguments
 	}
+}
+
+// parseUpOptions reads the optional Kibana checkout without adding a CLI dependency.
+func parseUpOptions(arguments []string) (string, error) {
+	if len(arguments) == 0 {
+		return "", nil
+	}
+
+	if arguments[0] != kibanaDirectoryOption {
+		return "", fmt.Errorf("unknown option %q for up", arguments[0])
+	}
+
+	if len(arguments) == 1 {
+		return "", fmt.Errorf("missing path for %s", kibanaDirectoryOption)
+	}
+
+	if len(arguments) > 2 {
+		return "", fmt.Errorf("unexpected arguments for up")
+	}
+
+	return arguments[1], nil
 }
 
 // runValidateCommand reports configuration problems as CLI output and an exit code.
@@ -105,7 +137,7 @@ func runValidateCommand(scenarioPath string) int {
 }
 
 // runUpCommand resolves local paths before starting the scenario infrastructure.
-func runUpCommand(scenarioPath string) int {
+func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 	loadedScenario, loadError := scenario.Load(scenarioPath)
 	if loadError != nil {
 		fmt.Fprintf(os.Stderr, "scenario validation failed: %v\n", loadError)
@@ -120,9 +152,19 @@ func runUpCommand(scenarioPath string) int {
 		return exitFailure
 	}
 
-	kibanaDirectory := filepath.Clean(
-		filepath.Join(projectDirectory, "..", "kibana"),
-	)
+	kibanaDirectory := configuredKibanaDirectory
+	if kibanaDirectory == "" {
+		kibanaDirectory = filepath.Join(projectDirectory, "..", "kibana")
+	}
+
+	absoluteKibanaDirectory, pathError := filepath.Abs(kibanaDirectory)
+	if pathError != nil {
+		fmt.Fprintf(os.Stderr, "resolve Kibana directory: %v\n", pathError)
+
+		return exitFailure
+	}
+
+	kibanaDirectory = absoluteKibanaDirectory
 
 	// Convert Ctrl+C and SIGTERM into shared cancellation so downloads,
 	// readiness checks, and every child process can stop together.
@@ -301,13 +343,7 @@ func runUpCommand(scenarioPath string) int {
 		"CCS is connected, fixtures are ready, and network faults are active.",
 	)
 
-	fmt.Fprintln(os.Stdout, "\nStart Kibana in another terminal:")
-	fmt.Fprintf(os.Stdout, "  cd %q\n", kibanaDirectory)
-	fmt.Fprintf(
-		os.Stdout,
-		"  yarn start --no-base-path --elasticsearch.hosts=%s\n",
-		coordinatorNode.URL(),
-	)
+	fmt.Fprintln(os.Stdout, "\nStart Kibana separately using your normal development command.")
 	fmt.Fprintln(os.Stdout, "\nPress Ctrl+C here to stop the environment.")
 
 	<-runContext.Done()

@@ -25,5 +25,5 @@ faults:
   - id: remote-1-latency
     target: remote-1
     type: latency
-    latencyMs: 60000
+    latencyMs: 25000
     jitterMs: 0

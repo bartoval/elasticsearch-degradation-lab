@@ -268,13 +268,8 @@ func prepareNodeDirectory(
 	}
 
 	nodeCache := filepath.Join(nodeDirectory, "cache")
-	_, cacheError := os.Lstat(nodeCache)
-	if cacheError == nil {
-		return nil
-	}
-
-	if !errors.Is(cacheError, os.ErrNotExist) {
-		return fmt.Errorf("inspect Elasticsearch cache: %w", cacheError)
+	if removeError := os.RemoveAll(nodeCache); removeError != nil {
+		return fmt.Errorf("reset Elasticsearch cache link: %w", removeError)
 	}
 
 	if symlinkError := os.Symlink(sharedCache, nodeCache); symlinkError != nil {
@@ -331,7 +326,7 @@ func assertPortAvailable(port int) error {
 	return nil
 }
 
-// snapshotArguments contains only the settings required to isolate the two nodes.
+// snapshotArguments isolates the nodes and skips realm setup because security is disabled.
 func snapshotArguments(
 	scriptPath string,
 	nodeDirectory string,
@@ -345,6 +340,7 @@ func snapshotArguments(
 		"--base-path",
 		nodeDirectory,
 		"--use-cached",
+		"--skipSecuritySetup",
 		"-E", "cluster.name=degradation-" + options.ID,
 		"-E", "node.name=" + options.ID,
 		"-E", "network.host=" + localHost,

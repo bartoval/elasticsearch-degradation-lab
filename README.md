@@ -1,122 +1,74 @@
 # kibana-degradation-runner
 
-`kibana-degradation-runner` creates repeatable local environments for observing how
-Kibana behaves when Elasticsearch and cross-cluster search are degraded.
+Creates repeatable local environments for observing Kibana under degraded
+Elasticsearch and cross-cluster search conditions. A YAML scenario defines the
+topology, test data, and network faults.
 
-Each YAML scenario describes the required cluster topology, test data, and network
-faults. The runner prepares the environment and keeps it active while you navigate
-Kibana manually. Kibana remains a separate development process.
+## Try it
 
-## Requirements
+You need native Linux or macOS and a bootstrapped Kibana checkout. The runner uses
+`../kibana` by default. Windows and WSL are not supported.
 
-- Go 1.26 or newer.
-- Native Linux or macOS on x64 or ARM64.
-- A bootstrapped Kibana checkout with `yarn` available in `PATH`.
-- Internet access the first time Toxiproxy is downloaded.
-
-Windows and WSL are not supported.
-
-By default, the runner expects the repositories to be siblings:
-
-```text
-Projects/
-├── kibana/
-└── kibana-degradation-runner/
-```
-
-## Getting started
-
-Clone the repository:
+Start the runner in one terminal:
 
 ```bash
-git clone https://github.com/bartoval/kibana-degradation-runner.git
-cd kibana-degradation-runner
+./kibana-degradation-runner up scenarios/ccs_slow_remote.yml
 ```
 
-Validate the example scenario:
+If Kibana is elsewhere, provide its directory:
 
 ```bash
-go run ./cmd/kibana-degradation-runner validate scenarios/ccs_slow_remote.yml
+./kibana-degradation-runner up scenarios/ccs_slow_remote.yml \
+  --kibana-dir /path/to/kibana
 ```
 
-Start its local environment:
+Alternatively, run it from source with Go 1.26 or newer:
 
 ```bash
 go run ./cmd/kibana-degradation-runner up scenarios/ccs_slow_remote.yml
 ```
 
-`validate` checks the YAML structure, required values, target references, and latency
-configuration.
+Start Kibana separately, either before or after the runner, using your normal
+development command.
 
-`up`:
+Before reproducing the behavior, wait for:
 
-1. Downloads Toxiproxy 2.12.0 when it is not already cached.
-2. Verifies the downloaded binary with its SHA-256 checksum.
-3. Starts the Toxiproxy API at `http://127.0.0.1:8474`.
-4. Creates a transport proxy on port `9401`.
-5. Uses Kibana's `scripts/es.js snapshot` tool to start a remote Elasticsearch on
-   ports `9201` and `9301`, then waits until it is ready.
-6. Uses the same Kibana tool to start a coordinator on ports `9200` and `9300`,
-   then waits until it is ready.
-7. Connects the coordinator to the remote through Toxiproxy in CCS proxy mode and
-   waits for the CCS connection.
-8. Creates the fixtures declared by the scenario on the selected clusters.
-9. Applies the declared latency faults to remote responses.
-10. Prints the command for starting Kibana separately against the coordinator.
-11. Keeps the environment alive until you press `Ctrl+C`.
-12. Stops every process and releases its ports before exiting.
+```text
+Scenario "Slow CCS remote" infrastructure is ready.
+```
 
-The terminal shows concise progress. Complete output from each child process is stored
-under `.runtime/<scenario-id>/logs/`. If Elasticsearch fails or times out, the runner
-prints the latest log lines and the full log path.
+When Kibana and the scenario are ready, open your local Kibana instance and reproduce
+the behavior.
 
-The example fault delays remote responses by 60 seconds while coordinator-only requests
-remain unaffected.
+Press `Ctrl+C` in the runner terminal to stop Elasticsearch and Toxiproxy. Stop Kibana
+separately.
 
-## Scenario structure
+The first run requires internet access to download Toxiproxy.
 
-The example scenario is divided into three sections:
+## Result
 
-- `topology`: exactly one remote Elasticsearch cluster in the current MVP.
+The example starts one coordinator and one remote Elasticsearch cluster, creates test
+data, and delays remote responses by 25 seconds. Coordinator-only requests remain
+unaffected.
+
+Elasticsearch and Toxiproxy logs are stored under
+`.runtime/ccs_slow_remote/logs/`.
+
+## Scenarios
+
+A scenario contains:
+
+- `topology`: one remote cluster in the current MVP.
 - `fixtures`: zero or more test-data presets.
 - `faults`: one or more network degradations.
 
-Use [`scenarios/ccs_slow_remote.yml`](scenarios/ccs_slow_remote.yml) as the starting
-point for another scenario.
+Start from [`scenarios/ccs_slow_remote.yml`](scenarios/ccs_slow_remote.yml).
 
-## Runtime files
-
-Downloaded tools and process logs are stored under `.runtime/`, which is ignored by Git:
-
-```text
-.runtime/
-├── tools/
-│   └── toxiproxy/
-└── <scenario-id>/
-    ├── elasticsearch/
-    │   ├── coordinator/
-    │   └── remote-1/
-    └── logs/
-        ├── elasticsearch-coordinator.log
-        ├── elasticsearch-remote-1.log
-        └── toxiproxy.log
-```
-
-## Binary artifacts
-
-The `Build artifacts` GitHub Actions workflow runs manually or when a `v*` tag is
-pushed. It produces archives and SHA-256 checksums for:
-
-- Linux x64 and ARM64.
-- macOS x64 and ARM64.
-
-Each archive contains the executable, `README.md`, and `LICENSE`. Windows and WSL
-artifacts are intentionally not produced.
-
-## Development checks
+Validate it without starting any processes:
 
 ```bash
-go fmt ./...
-go vet ./...
-go build ./cmd/kibana-degradation-runner
+./kibana-degradation-runner validate scenarios/ccs_slow_remote.yml
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for implementation details and development
+commands.
