@@ -45,9 +45,9 @@ func Start(ctx context.Context, binaryPath string, logPath string) (*Server, err
 		return nil, fmt.Errorf("create Toxiproxy log directory: %w", createDirectoryError)
 	}
 
-	logFile, openError := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, openError := os.Create(logPath)
 	if openError != nil {
-		return nil, fmt.Errorf("open Toxiproxy log: %w", openError)
+		return nil, fmt.Errorf("create Toxiproxy log: %w", openError)
 	}
 	defer logFile.Close()
 
@@ -115,11 +115,6 @@ func (server *Server) WaitUntilReady(ctx context.Context) error {
 		case <-readinessTicker.C:
 		}
 	}
-}
-
-// Wait keeps the runner alive until Toxiproxy exits or the parent context is cancelled.
-func (server *Server) Wait() error {
-	return <-server.done
 }
 
 // Stop cancels the child context and waits for the process to release its resources.

@@ -1,13 +1,22 @@
 package scenario
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+)
 
 const (
-	supportedVersion    = 1
-	coordinatorTarget   = "coordinator"
-	latencyFaultType    = "latency"
-	minimalLogsPreset   = "minimal_logs"
-	minimalLookupPreset = "minimal_lookup"
+	supportedVersion  = 1
+	latencyFaultType  = "latency"
+	CoordinatorTarget = "coordinator"
+)
+
+// FixturePreset limits YAML values to data setups implemented by the runner.
+type FixturePreset string
+
+const (
+	FixturePresetMinimalLogs   FixturePreset = "minimal_logs"
+	FixturePresetMinimalLookup FixturePreset = "minimal_lookup"
 )
 
 // Scenario describes the infrastructure, test data, and network faults requested by a YAML file.
@@ -34,8 +43,8 @@ type Remote struct {
 
 // Fixture selects the data preset that will be created on a scenario target.
 type Fixture struct {
-	Target string `yaml:"target"`
-	Preset string `yaml:"preset"`
+	Target string        `yaml:"target"`
+	Preset FixturePreset `yaml:"preset"`
 }
 
 // Fault describes a network degradation applied to a scenario target.
@@ -57,16 +66,20 @@ func (scenarioConfig Scenario) Validate() error {
 		return fmt.Errorf("id is required")
 	}
 
+	if !isSafeIdentifier(scenarioConfig.ID) {
+		return fmt.Errorf("id cannot contain a path")
+	}
+
 	if scenarioConfig.Name == "" {
 		return fmt.Errorf("name is required")
 	}
 
-	if len(scenarioConfig.Topology.Remotes) == 0 {
-		return fmt.Errorf("topology.remotes must contain at least one remote")
+	if len(scenarioConfig.Topology.Remotes) != 1 {
+		return fmt.Errorf("topology.remotes must contain exactly one remote")
 	}
 
 	targets := map[string]bool{
-		coordinatorTarget: true,
+		CoordinatorTarget: true,
 	}
 
 	for remoteIndex, remote := range scenarioConfig.Topology.Remotes {
@@ -76,6 +89,25 @@ func (scenarioConfig Scenario) Validate() error {
 
 		if remote.Alias == "" {
 			return fmt.Errorf("topology.remotes[%d].alias is required", remoteIndex)
+		}
+
+		if !isSafeIdentifier(remote.ID) {
+			return fmt.Errorf("topology.remotes[%d].id cannot contain a path", remoteIndex)
+		}
+
+		if remote.ID == CoordinatorTarget {
+			return fmt.Errorf(
+				"topology.remotes[%d].id cannot be %q",
+				remoteIndex,
+				CoordinatorTarget,
+			)
+		}
+
+		if !isValidRemoteAlias(remote.Alias) {
+			return fmt.Errorf(
+				"topology.remotes[%d].alias can contain only letters, numbers, hyphens, and underscores",
+				remoteIndex,
+			)
 		}
 
 		if targets[remote.ID] {
@@ -98,8 +130,8 @@ func (scenarioConfig Scenario) Validate() error {
 			return fmt.Errorf("fixtures[%d].preset is required", fixtureIndex)
 		}
 
-		presetIsSupported := fixture.Preset == minimalLogsPreset ||
-			fixture.Preset == minimalLookupPreset
+		presetIsSupported := fixture.Preset == FixturePresetMinimalLogs ||
+			fixture.Preset == FixturePresetMinimalLookup
 		if !presetIsSupported {
 			return fmt.Errorf(
 				"fixtures[%d].preset %q is not supported",
@@ -113,10 +145,17 @@ func (scenarioConfig Scenario) Validate() error {
 		return fmt.Errorf("faults must contain at least one fault")
 	}
 
+	faultIDs := make(map[string]bool, len(scenarioConfig.Faults))
+
 	for faultIndex, fault := range scenarioConfig.Faults {
 		if fault.ID == "" {
 			return fmt.Errorf("faults[%d].id is required", faultIndex)
 		}
+
+		if faultIDs[fault.ID] {
+			return fmt.Errorf("faults[%d].id %q is duplicated", faultIndex, fault.ID)
+		}
+		faultIDs[fault.ID] = true
 
 		if !targets[fault.Target] {
 			return fmt.Errorf(
@@ -126,7 +165,7 @@ func (scenarioConfig Scenario) Validate() error {
 			)
 		}
 
-		if fault.Target == coordinatorTarget {
+		if fault.Target == CoordinatorTarget {
 			return fmt.Errorf(
 				"faults[%d].target must reference a remote cluster",
 				faultIndex,
@@ -151,4 +190,27 @@ func (scenarioConfig Scenario) Validate() error {
 	}
 
 	return nil
+}
+
+// isSafeIdentifier protects runtime paths without restricting ordinary scenario names.
+func isSafeIdentifier(identifier string) bool {
+	identifierIsPath := filepath.Base(identifier) != identifier
+
+	return !identifierIsPath && identifier != "." && identifier != ".."
+}
+
+// isValidRemoteAlias keeps the alias safe for Elasticsearch cluster setting keys.
+func isValidRemoteAlias(alias string) bool {
+	for _, character := range alias {
+		characterIsLetter := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z'
+		characterIsNumber := character >= '0' && character <= '9'
+		characterIsSeparator := character == '-' || character == '_'
+
+		if !characterIsLetter && !characterIsNumber && !characterIsSeparator {
+			return false
+		}
+	}
+
+	return true
 }

@@ -7,25 +7,8 @@ import (
 	"time"
 )
 
-const (
-	minimalLogsPreset   = "minimal_logs"
-	minimalLookupPreset = "minimal_lookup"
-)
-
-// ApplyFixture creates the small data preset selected by the scenario.
-func (node *Node) ApplyFixture(ctx context.Context, preset string) error {
-	switch preset {
-	case minimalLogsPreset:
-		return node.applyMinimalLogs(ctx)
-	case minimalLookupPreset:
-		return node.applyMinimalLookup(ctx)
-	default:
-		return fmt.Errorf("unknown fixture preset %q", preset)
-	}
-}
-
-// applyMinimalLogs creates one logs data stream and one document on the remote.
-func (node *Node) applyMinimalLogs(ctx context.Context) error {
+// ApplyMinimalLogs creates one logs data stream and one document on the remote.
+func (node *Node) ApplyMinimalLogs(ctx context.Context) error {
 	const dataStream = "logs-degradation-default"
 
 	createError := node.requestJSON(
@@ -61,8 +44,8 @@ func (node *Node) applyMinimalLogs(ctx context.Context) error {
 	return nil
 }
 
-// applyMinimalLookup creates one coordinator lookup index and one enrichment document.
-func (node *Node) applyMinimalLookup(ctx context.Context) error {
+// ApplyMinimalLookup creates one coordinator lookup index and one enrichment document.
+func (node *Node) ApplyMinimalLookup(ctx context.Context) error {
 	const indexName = "degradation-lookup"
 
 	indexDefinition := map[string]any{

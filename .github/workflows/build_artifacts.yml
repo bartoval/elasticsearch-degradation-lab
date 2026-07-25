@@ -23,11 +23,16 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Check code
-        run: go vet ./...
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
 
   build:
     needs: check
     runs-on: ubuntu-latest
+    env:
+      ARTIFACT_NAME: kibana-degradation-runner-${{ matrix.goos }}-${{ matrix.goarch }}
+      BINARY_NAME: kibana-degradation-runner
     strategy:
       matrix:
         include:
@@ -56,26 +61,25 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          artifact_name="kibana-degradation-runner-${GOOS}-${GOARCH}"
-          package_directory="dist/${artifact_name}"
+          package_directory="dist/${ARTIFACT_NAME}"
 
           mkdir -p "${package_directory}"
           go build \
             -trimpath \
             -ldflags="-s -w" \
-            -o "${package_directory}/kibana-degradation-runner" \
+            -o "${package_directory}/${BINARY_NAME}" \
             ./cmd/kibana-degradation-runner
 
           cp LICENSE README.md "${package_directory}/"
-          tar -C dist -czf "dist/${artifact_name}.tar.gz" "${artifact_name}"
-          sha256sum "dist/${artifact_name}.tar.gz" > "dist/${artifact_name}.tar.gz.sha256"
+          tar -C dist -czf "dist/${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}"
+          sha256sum "dist/${ARTIFACT_NAME}.tar.gz" > "dist/${ARTIFACT_NAME}.tar.gz.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: kibana-degradation-runner-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: |
-            dist/kibana-degradation-runner-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
-            dist/kibana-degradation-runner-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
+            dist/${{ env.ARTIFACT_NAME }}.tar.gz
+            dist/${{ env.ARTIFACT_NAME }}.tar.gz.sha256
           if-no-files-found: error
           compression-level: 0

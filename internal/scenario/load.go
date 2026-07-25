@@ -9,9 +9,9 @@ import (
 
 // Load converts a YAML file into a Scenario and validates it before returning it to the CLI.
 func Load(scenarioPath string) (Scenario, error) {
-	scenarioFile, err := os.Open(scenarioPath)
-	if err != nil {
-		return Scenario{}, fmt.Errorf("open %q: %w", scenarioPath, err)
+	scenarioFile, openError := os.Open(scenarioPath)
+	if openError != nil {
+		return Scenario{}, fmt.Errorf("open %q: %w", scenarioPath, openError)
 	}
 	defer scenarioFile.Close()
 

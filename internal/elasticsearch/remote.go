@@ -76,6 +76,13 @@ func (node *Node) WaitForRemote(
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case processError := <-node.done:
+			return fmt.Errorf(
+				"Elasticsearch %s exited while waiting for remote cluster %s: %v",
+				node.id,
+				alias,
+				processError,
+			)
 		case <-timeout.C:
 			return fmt.Errorf(
 				"timed out waiting for remote cluster %s: %v",
@@ -122,7 +129,7 @@ func (node *Node) remoteIsConnected(ctx context.Context, alias string) (bool, er
 	return true, nil
 }
 
-// requestJSON handles the two authenticated Elasticsearch calls required by this milestone.
+// requestJSON handles authenticated JSON requests used during scenario setup.
 func (node *Node) requestJSON(
 	ctx context.Context,
 	method string,
@@ -151,13 +158,12 @@ func (node *Node) requestJSON(
 		return fmt.Errorf("create Elasticsearch request: %w", requestError)
 	}
 
-	request.SetBasicAuth("elastic", elasticsearchPassword)
+	request.SetBasicAuth(elasticsearchUsername, elasticsearchPassword)
 	if body != nil {
 		request.Header.Set("content-type", "application/json")
 	}
 
-	client := &http.Client{Timeout: requestTimeout}
-	response, responseError := client.Do(request)
+	response, responseError := setupHTTPClient.Do(request)
 	if responseError != nil {
 		return responseError
 	}

@@ -6,7 +6,7 @@ version: 1
 id: ccs_slow_remote
 name: Slow CCS remote
 
-# Describes one or more remote Elasticsearch clusters required by the scenario.
+# Describes the single remote Elasticsearch cluster supported by the current MVP.
 topology:
   remotes:
     - id: remote-1
@@ -25,5 +25,5 @@ faults:
   - id: remote-1-latency
     target: remote-1
     type: latency
-    latencyMs: 15000
+    latencyMs: 60000
     jitterMs: 0

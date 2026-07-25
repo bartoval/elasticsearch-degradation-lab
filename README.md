@@ -55,28 +55,29 @@ configuration.
 3. Starts the Toxiproxy API at `http://127.0.0.1:8474`.
 4. Creates a transport proxy on port `9401`.
 5. Uses Kibana's `scripts/es.js snapshot` tool to start a remote Elasticsearch on
-   ports `9201` and `9301`.
-6. Uses the same Kibana tool to start a coordinator on ports `9200` and `9300`.
-7. Connects the coordinator to the remote through Toxiproxy in CCS proxy mode.
+   ports `9201` and `9301`, then waits until it is ready.
+6. Uses the same Kibana tool to start a coordinator on ports `9200` and `9300`,
+   then waits until it is ready.
+7. Connects the coordinator to the remote through Toxiproxy in CCS proxy mode and
+   waits for the CCS connection.
 8. Creates the fixtures declared by the scenario on the selected clusters.
 9. Applies the declared latency faults to remote responses.
-10. Waits for both clusters and the CCS connection, reporting progress every ten seconds.
-11. Prints the command for starting Kibana separately against the coordinator.
-12. Keeps the environment alive until you press `Ctrl+C`.
-13. Stops every process and releases its ports before exiting.
+10. Prints the command for starting Kibana separately against the coordinator.
+11. Keeps the environment alive until you press `Ctrl+C`.
+12. Stops every process and releases its ports before exiting.
 
 The terminal shows concise progress. Complete output from each child process is stored
 under `.runtime/<scenario-id>/logs/`. If Elasticsearch fails or times out, the runner
 prints the latest log lines and the full log path.
 
-The example fault delays remote responses by 15 seconds while coordinator-only requests
+The example fault delays remote responses by 60 seconds while coordinator-only requests
 remain unaffected.
 
 ## Scenario structure
 
 The example scenario is divided into three sections:
 
-- `topology`: one or more remote Elasticsearch clusters.
+- `topology`: exactly one remote Elasticsearch cluster in the current MVP.
 - `fixtures`: zero or more test-data presets.
 - `faults`: one or more network degradations.
 
@@ -115,7 +116,7 @@ artifacts are intentionally not produced.
 ## Development checks
 
 ```bash
-gofmt -w cmd/kibana-degradation-runner/main.go
+go fmt ./...
 go vet ./...
 go build ./cmd/kibana-degradation-runner
 ```

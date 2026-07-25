@@ -16,14 +16,21 @@ import (
 )
 
 const (
-	localHost             = "127.0.0.1"
-	elasticsearchPassword = "changeme"
-	readinessTimeout      = 10 * time.Minute
-	readinessInterval     = 1 * time.Second
-	progressInterval      = 10 * time.Second
-	requestTimeout        = 2 * time.Second
-	shutdownTimeout       = 10 * time.Second
-	recentLogBytes        = 4 * 1024
+	localHost               = "127.0.0.1"
+	elasticsearchUsername   = "elastic"
+	elasticsearchPassword   = "changeme"
+	readinessTimeout        = 10 * time.Minute
+	readinessInterval       = 1 * time.Second
+	progressInterval        = 10 * time.Second
+	readinessRequestTimeout = 2 * time.Second
+	setupRequestTimeout     = 30 * time.Second
+	shutdownTimeout         = 10 * time.Second
+	recentLogBytes          = 4 * 1024
+)
+
+var (
+	readinessHTTPClient = &http.Client{Timeout: readinessRequestTimeout}
+	setupHTTPClient     = &http.Client{Timeout: setupRequestTimeout}
 )
 
 // Options identifies one Elasticsearch node and its local ports.
@@ -67,13 +74,17 @@ func Start(
 		return nil, portError
 	}
 
-	nodeIDIsPath := filepath.Base(options.ID) != options.ID
-	if nodeIDIsPath || options.ID == "." || options.ID == ".." {
-		return nil, fmt.Errorf("node id %q cannot be used as a directory", options.ID)
-	}
-
 	nodeDirectory := filepath.Join(sessionDirectory, "elasticsearch", options.ID)
-	if directoryError := prepareNodeDirectory(kibanaDirectory, nodeDirectory); directoryError != nil {
+	dataDirectory := filepath.Join(nodeDirectory, "data")
+	internalLogDirectory := filepath.Join(nodeDirectory, "logs")
+
+	directoryError := prepareNodeDirectory(
+		kibanaDirectory,
+		nodeDirectory,
+		dataDirectory,
+		internalLogDirectory,
+	)
+	if directoryError != nil {
 		return nil, directoryError
 	}
 
@@ -88,7 +99,13 @@ func Start(
 	command := exec.CommandContext(
 		processContext,
 		nodePath,
-		snapshotArguments(scriptPath, nodeDirectory, options)...,
+		snapshotArguments(
+			scriptPath,
+			nodeDirectory,
+			dataDirectory,
+			internalLogDirectory,
+			options,
+		)...,
 	)
 	command.Dir = kibanaDirectory
 	command.Stdout = logFile
@@ -201,11 +218,8 @@ func (node *Node) Stop() {
 
 // isReady uses the same authenticated cluster-health signal as the JavaScript prototype.
 func (node *Node) isReady(ctx context.Context) (bool, error) {
-	requestContext, cancelRequest := context.WithTimeout(ctx, requestTimeout)
-	defer cancelRequest()
-
 	request, requestError := http.NewRequestWithContext(
-		requestContext,
+		ctx,
 		http.MethodGet,
 		node.url+"/_cluster/health",
 		nil,
@@ -214,9 +228,9 @@ func (node *Node) isReady(ctx context.Context) (bool, error) {
 		return false, requestError
 	}
 
-	request.SetBasicAuth("elastic", elasticsearchPassword)
+	request.SetBasicAuth(elasticsearchUsername, elasticsearchPassword)
 
-	response, responseError := http.DefaultClient.Do(request)
+	response, responseError := readinessHTTPClient.Do(request)
 	if responseError != nil {
 		return false, responseError
 	}
@@ -230,10 +244,12 @@ func (node *Node) isReady(ctx context.Context) (bool, error) {
 }
 
 // prepareNodeDirectory isolates installations while sharing Kibana's snapshot cache.
-func prepareNodeDirectory(kibanaDirectory string, nodeDirectory string) error {
-	dataDirectory := filepath.Join(nodeDirectory, "data")
-	logDirectory := filepath.Join(nodeDirectory, "logs")
-
+func prepareNodeDirectory(
+	kibanaDirectory string,
+	nodeDirectory string,
+	dataDirectory string,
+	logDirectory string,
+) error {
 	if removeError := os.RemoveAll(dataDirectory); removeError != nil {
 		return fmt.Errorf("reset Elasticsearch data: %w", removeError)
 	}
@@ -252,10 +268,17 @@ func prepareNodeDirectory(kibanaDirectory string, nodeDirectory string) error {
 	}
 
 	nodeCache := filepath.Join(nodeDirectory, "cache")
-	if _, cacheError := os.Lstat(nodeCache); errors.Is(cacheError, os.ErrNotExist) {
-		if symlinkError := os.Symlink(sharedCache, nodeCache); symlinkError != nil {
-			return fmt.Errorf("share Kibana ES cache: %w", symlinkError)
-		}
+	_, cacheError := os.Lstat(nodeCache)
+	if cacheError == nil {
+		return nil
+	}
+
+	if !errors.Is(cacheError, os.ErrNotExist) {
+		return fmt.Errorf("inspect Elasticsearch cache: %w", cacheError)
+	}
+
+	if symlinkError := os.Symlink(sharedCache, nodeCache); symlinkError != nil {
+		return fmt.Errorf("share Kibana ES cache: %w", symlinkError)
 	}
 
 	return nil
@@ -301,7 +324,7 @@ func assertPortAvailable(port int) error {
 	address := net.JoinHostPort(localHost, strconv.Itoa(port))
 	listener, listenError := net.Listen("tcp", address)
 	if listenError != nil {
-		return fmt.Errorf("port %d is already in use", port)
+		return fmt.Errorf("port %d is unavailable: %w", port, listenError)
 	}
 	defer listener.Close()
 
@@ -312,6 +335,8 @@ func assertPortAvailable(port int) error {
 func snapshotArguments(
 	scriptPath string,
 	nodeDirectory string,
+	dataDirectory string,
+	logDirectory string,
 	options Options,
 ) []string {
 	return []string{
@@ -326,8 +351,8 @@ func snapshotArguments(
 		"-E", "discovery.type=single-node",
 		"-E", "http.port=" + strconv.Itoa(options.HTTPPort),
 		"-E", "transport.port=" + strconv.Itoa(options.TransportPort),
-		"-E", "path.data=" + filepath.Join(nodeDirectory, "data"),
-		"-E", "path.logs=" + filepath.Join(nodeDirectory, "logs"),
-		"-E", "xpack.security.transport.ssl.enabled=false",
+		"-E", "path.data=" + dataDirectory,
+		"-E", "path.logs=" + logDirectory,
+		"-E", "xpack.security.enabled=false",
 	}
 }

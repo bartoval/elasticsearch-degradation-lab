@@ -22,7 +22,9 @@ const (
 	exitSuccess          = 0
 	exitFailure          = 1
 	exitInvalidArguments = 2
+)
 
+const (
 	coordinatorHTTPPort      = 9200
 	coordinatorTransportPort = 9300
 	remoteHTTPPort           = 9201
@@ -90,9 +92,9 @@ func run(args []string) int {
 
 // runValidateCommand reports configuration problems as CLI output and an exit code.
 func runValidateCommand(scenarioPath string) int {
-	loadedScenario, err := scenario.Load(scenarioPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "scenario validation failed: %v\n", err)
+	loadedScenario, loadError := scenario.Load(scenarioPath)
+	if loadError != nil {
+		fmt.Fprintf(os.Stderr, "scenario validation failed: %v\n", loadError)
 
 		return exitFailure
 	}
@@ -134,19 +136,6 @@ func runUpCommand(scenarioPath string) int {
 	// This callback lets internal packages report progress without depending on CLI output.
 	reportProgress := func(message string) {
 		fmt.Fprintf(os.Stdout, "[progress] %s\n", message)
-	}
-
-	if len(loadedScenario.Topology.Remotes) != 1 {
-		fmt.Fprintln(os.Stderr, "start scenario: up currently supports exactly one remote")
-
-		return exitFailure
-	}
-
-	scenarioIDIsPath := filepath.Base(loadedScenario.ID) != loadedScenario.ID
-	if scenarioIDIsPath || loadedScenario.ID == "." || loadedScenario.ID == ".." {
-		fmt.Fprintln(os.Stderr, "start scenario: scenario id cannot contain a path")
-
-		return exitFailure
 	}
 
 	runtimeDirectory := filepath.Join(projectDirectory, ".runtime")
@@ -236,9 +225,9 @@ func runUpCommand(scenarioPath string) int {
 		runContext,
 		kibanaDirectory,
 		sessionDirectory,
-		"coordinator",
+		scenario.CoordinatorTarget,
 		elasticsearch.Options{
-			ID:            "coordinator",
+			ID:            scenario.CoordinatorTarget,
 			HTTPPort:      coordinatorHTTPPort,
 			TransportPort: coordinatorTransportPort,
 		},
@@ -282,56 +271,24 @@ func runUpCommand(scenarioPath string) int {
 		return exitFailure
 	}
 
-	for _, fixture := range loadedScenario.Fixtures {
-		targetNode := remoteNode
-		if fixture.Target == "coordinator" {
-			targetNode = coordinatorNode
-		}
+	fixtureError := applyFixtures(
+		runContext,
+		loadedScenario.Fixtures,
+		coordinatorNode,
+		remoteNode,
+		reportProgress,
+	)
+	if fixtureError != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", fixtureError)
 
-		reportProgress(
-			fmt.Sprintf(
-				"Applying fixture %s to %s",
-				fixture.Preset,
-				fixture.Target,
-			),
-		)
-
-		fixtureError := targetNode.ApplyFixture(runContext, fixture.Preset)
-		if fixtureError != nil {
-			fmt.Fprintf(
-				os.Stderr,
-				"apply fixture %s to %s: %v\n",
-				fixture.Preset,
-				fixture.Target,
-				fixtureError,
-			)
-
-			return exitFailure
-		}
+		return exitFailure
 	}
 
-	for _, fault := range loadedScenario.Faults {
-		reportProgress(
-			fmt.Sprintf(
-				"Applying %dms latency fault %s to %s",
-				fault.LatencyMS,
-				fault.ID,
-				fault.Target,
-			),
-		)
+	faultError := applyFaults(runContext, loadedScenario.Faults, reportProgress)
+	if faultError != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", faultError)
 
-		faultError := toxiproxy.ApplyLatency(
-			runContext,
-			fault.Target,
-			fault.ID,
-			fault.LatencyMS,
-			fault.JitterMS,
-		)
-		if faultError != nil {
-			fmt.Fprintf(os.Stderr, "apply fault %s: %v\n", fault.ID, faultError)
-
-			return exitFailure
-		}
+		return exitFailure
 	}
 
 	fmt.Fprintf(
@@ -354,12 +311,9 @@ func runUpCommand(scenarioPath string) int {
 	fmt.Fprintln(os.Stdout, "\nPress Ctrl+C here to stop the environment.")
 
 	<-runContext.Done()
+	stopSignals()
 
 	fmt.Fprintln(os.Stdout, "\n[progress] Stopping scenario infrastructure")
-	coordinatorNode.Stop()
-	remoteNode.Stop()
-	toxiproxyServer.Stop()
-	fmt.Fprintln(os.Stdout, "Scenario infrastructure stopped.")
 
 	return exitSuccess
 }
@@ -401,4 +355,81 @@ func startElasticsearch(
 	}
 
 	return node, nil
+}
+
+// applyFixtures sends each data preset to the target selected by the scenario.
+func applyFixtures(
+	ctx context.Context,
+	fixtures []scenario.Fixture,
+	coordinatorNode *elasticsearch.Node,
+	remoteNode *elasticsearch.Node,
+	reportProgress func(string),
+) error {
+	for _, fixture := range fixtures {
+		targetNode := remoteNode
+		if fixture.Target == scenario.CoordinatorTarget {
+			targetNode = coordinatorNode
+		}
+
+		reportProgress(
+			fmt.Sprintf(
+				"Applying fixture %s to %s",
+				fixture.Preset,
+				fixture.Target,
+			),
+		)
+
+		var fixtureError error
+
+		switch fixture.Preset {
+		case scenario.FixturePresetMinimalLogs:
+			fixtureError = targetNode.ApplyMinimalLogs(ctx)
+		case scenario.FixturePresetMinimalLookup:
+			fixtureError = targetNode.ApplyMinimalLookup(ctx)
+		default:
+			return fmt.Errorf("fixture preset %q is not supported", fixture.Preset)
+		}
+
+		if fixtureError != nil {
+			return fmt.Errorf(
+				"apply fixture %s to %s: %w",
+				fixture.Preset,
+				fixture.Target,
+				fixtureError,
+			)
+		}
+	}
+
+	return nil
+}
+
+// applyFaults activates the latency conditions after the healthy topology is ready.
+func applyFaults(
+	ctx context.Context,
+	faults []scenario.Fault,
+	reportProgress func(string),
+) error {
+	for _, fault := range faults {
+		reportProgress(
+			fmt.Sprintf(
+				"Applying %dms latency fault %s to %s",
+				fault.LatencyMS,
+				fault.ID,
+				fault.Target,
+			),
+		)
+
+		faultError := toxiproxy.ApplyLatency(
+			ctx,
+			fault.Target,
+			fault.ID,
+			fault.LatencyMS,
+			fault.JitterMS,
+		)
+		if faultError != nil {
+			return fmt.Errorf("apply fault %s: %w", fault.ID, faultError)
+		}
+	}
+
+	return nil
 }

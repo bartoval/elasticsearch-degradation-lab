@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const proxyRequestTimeout = 5 * time.Second
+const (
+	proxiesPath         = "/proxies"
+	proxyRequestTimeout = 5 * time.Second
+)
 
 type proxyDefinition struct {
 	Name     string `json:"name"`
@@ -48,7 +51,7 @@ func CreateProxy(
 		Enabled:  true,
 	}
 
-	return postJSON(ctx, "/proxies", definition, "create Toxiproxy proxy")
+	return postJSON(ctx, proxiesPath, definition, "create Toxiproxy proxy")
 }
 
 // ApplyLatency delays traffic returning from the selected remote to the coordinator.
@@ -70,7 +73,7 @@ func ApplyLatency(
 		},
 	}
 
-	proxyPath := "/proxies/" + url.PathEscape(proxyName) + "/toxics"
+	proxyPath := proxiesPath + "/" + url.PathEscape(proxyName) + "/toxics"
 
 	return postJSON(ctx, proxyPath, definition, "apply Toxiproxy latency")
 }

@@ -143,9 +143,7 @@ func binaryMatchesChecksum(binaryPath string, expectedChecksum string) bool {
 		return false
 	}
 
-	actualChecksum := sha256.Sum256(binaryContents)
-
-	return fmt.Sprintf("%x", actualChecksum) == expectedChecksum
+	return checksum(binaryContents) == expectedChecksum
 }
 
 // downloadReleaseAsset verifies the response before its contents enter the local cache.
@@ -181,10 +179,16 @@ func downloadReleaseAsset(ctx context.Context, asset releaseAsset) ([]byte, erro
 		return nil, fmt.Errorf("read downloaded Toxiproxy binary: %w", readError)
 	}
 
-	actualChecksum := sha256.Sum256(binaryContents)
-	if fmt.Sprintf("%x", actualChecksum) != asset.checksum {
+	if checksum(binaryContents) != asset.checksum {
 		return nil, fmt.Errorf("downloaded Toxiproxy checksum does not match the release")
 	}
 
 	return binaryContents, nil
+}
+
+// checksum returns the lowercase SHA-256 representation used by release metadata.
+func checksum(contents []byte) string {
+	value := sha256.Sum256(contents)
+
+	return fmt.Sprintf("%x", value)
 }
