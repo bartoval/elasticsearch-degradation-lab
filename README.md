@@ -101,6 +101,17 @@ Downloaded tools and process logs are stored under `.runtime/`, which is ignored
         └── toxiproxy.log
 ```
 
+## Binary artifacts
+
+The `Build artifacts` GitHub Actions workflow runs manually or when a `v*` tag is
+pushed. It produces archives and SHA-256 checksums for:
+
+- Linux x64 and ARM64.
+- macOS x64 and ARM64.
+
+Each archive contains the executable, `README.md`, and `LICENSE`. Windows and WSL
+artifacts are intentionally not produced.
+
 ## Development checks
 
 ```bash
