@@ -27,6 +27,7 @@ const (
 	coordinatorTransportPort = 9300
 	remoteHTTPPort           = 9201
 	remoteTransportPort      = 9301
+	remoteProxyPort          = 9401
 )
 
 // Command-line arguments:
@@ -191,13 +192,34 @@ func runUpCommand(scenarioPath string) int {
 
 	reportProgress("Toxiproxy is ready at " + toxiproxy.APIURL)
 
+	remote := loadedScenario.Topology.Remotes[0]
+	reportProgress(
+		fmt.Sprintf(
+			"Creating transport proxy on port %d for remote %s",
+			remoteProxyPort,
+			remote.ID,
+		),
+	)
+
+	proxyError := toxiproxy.CreateProxy(
+		runContext,
+		remote.ID,
+		remoteProxyPort,
+		remoteTransportPort,
+	)
+	if proxyError != nil {
+		fmt.Fprintf(os.Stderr, "start scenario: %v\n", proxyError)
+
+		return exitFailure
+	}
+
 	remoteNode, remoteError := startElasticsearch(
 		runContext,
 		kibanaDirectory,
 		sessionDirectory,
 		"remote",
 		elasticsearch.Options{
-			ID:            loadedScenario.Topology.Remotes[0].ID,
+			ID:            remote.ID,
 			HTTPPort:      remoteHTTPPort,
 			TransportPort: remoteTransportPort,
 		},
@@ -229,6 +251,37 @@ func runUpCommand(scenarioPath string) int {
 	}
 	defer coordinatorNode.Stop()
 
+	reportProgress(
+		fmt.Sprintf(
+			"Configuring CCS alias %s through port %d",
+			remote.Alias,
+			remoteProxyPort,
+		),
+	)
+
+	configurationError := coordinatorNode.ConfigureRemote(
+		runContext,
+		remote.Alias,
+		remoteProxyPort,
+		remote.SkipUnavailable,
+	)
+	if configurationError != nil {
+		fmt.Fprintf(os.Stderr, "configure remote cluster: %v\n", configurationError)
+
+		return exitFailure
+	}
+
+	connectionError := coordinatorNode.WaitForRemote(
+		runContext,
+		remote.Alias,
+		reportProgress,
+	)
+	if connectionError != nil {
+		fmt.Fprintf(os.Stderr, "connect remote cluster: %v\n", connectionError)
+
+		return exitFailure
+	}
+
 	fmt.Fprintf(
 		os.Stdout,
 		"\nScenario %q infrastructure is ready.\n",
@@ -236,7 +289,7 @@ func runUpCommand(scenarioPath string) int {
 	)
 	fmt.Fprintln(
 		os.Stdout,
-		"CCS, fixtures, and network faults are not applied yet.",
+		"CCS is connected. Fixtures and network faults are not applied yet.",
 	)
 
 	fmt.Fprintln(os.Stdout, "\nStart Kibana in another terminal:")

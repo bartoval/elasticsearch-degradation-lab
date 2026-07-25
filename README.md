@@ -53,19 +53,21 @@ configuration.
 1. Downloads Toxiproxy 2.12.0 when it is not already cached.
 2. Verifies the downloaded binary with its SHA-256 checksum.
 3. Starts the Toxiproxy API at `http://127.0.0.1:8474`.
-4. Uses Kibana's `scripts/es.js snapshot` tool to start a remote Elasticsearch on
+4. Creates a transport proxy on port `9401`.
+5. Uses Kibana's `scripts/es.js snapshot` tool to start a remote Elasticsearch on
    ports `9201` and `9301`.
-5. Uses the same Kibana tool to start a coordinator on ports `9200` and `9300`.
-6. Waits for both clusters and reports startup progress every ten seconds.
-7. Prints the command for starting Kibana separately against the coordinator.
-8. Keeps the environment alive until you press `Ctrl+C`.
-9. Stops every process and releases its ports before exiting.
+6. Uses the same Kibana tool to start a coordinator on ports `9200` and `9300`.
+7. Connects the coordinator to the remote through Toxiproxy in CCS proxy mode.
+8. Waits for both clusters and the CCS connection, reporting progress every ten seconds.
+9. Prints the command for starting Kibana separately against the coordinator.
+10. Keeps the environment alive until you press `Ctrl+C`.
+11. Stops every process and releases its ports before exiting.
 
 The terminal shows concise progress. Complete output from each child process is stored
 under `.runtime/<scenario-id>/logs/`. If Elasticsearch fails or times out, the runner
 prints the latest log lines and the full log path.
 
-CCS configuration, fixtures, and faults are not connected to `up` yet.
+Fixtures and faults are not connected to `up` yet.
 
 ## Scenario structure
 
