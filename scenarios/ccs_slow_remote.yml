@@ -1,0 +1,29 @@
+# Example scenario that describes a slow CCS remote cluster.
+# It groups the required cluster topology, test data, and network degradations.
+# Copy this file as a starting point when creating another scenario.
+
+version: 1
+id: ccs_slow_remote
+name: Slow CCS remote
+
+# Describes one or more remote Elasticsearch clusters required by the scenario.
+topology:
+  remotes:
+    - id: remote-1
+      alias: remote-1
+      skipUnavailable: true
+
+# Describes zero or more test-data fixtures to create on the configured clusters.
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+  - target: coordinator
+    preset: minimal_lookup
+
+# Describes one or more network degradations to apply after the clusters are ready.
+faults:
+  - id: remote-1-latency
+    target: remote-1
+    type: latency
+    latencyMs: 15000
+    jitterMs: 0

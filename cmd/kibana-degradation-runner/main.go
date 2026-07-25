@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"kibana-degradation-runner/internal/scenario"
 )
 
 const usage = `Usage:
@@ -59,6 +61,12 @@ func run(args []string) int {
 			return exitInvalidArguments
 		}
 
+		scenarioPath := args[1]
+
+		if command == "validate" {
+			return validateScenario(scenarioPath)
+		}
+
 		fmt.Fprintf(os.Stderr, "%s: not implemented yet\n", command)
 
 		return exitFailure
@@ -68,4 +76,18 @@ func run(args []string) int {
 
 		return exitInvalidArguments
 	}
+}
+
+// validateScenario reports configuration problems before any infrastructure is started.
+func validateScenario(scenarioPath string) int {
+	loadedScenario, err := scenario.Load(scenarioPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "scenario validation failed: %v\n", err)
+
+		return exitFailure
+	}
+
+	fmt.Fprintf(os.Stdout, "Scenario %q is valid.\n", loadedScenario.ID)
+
+	return exitSuccess
 }

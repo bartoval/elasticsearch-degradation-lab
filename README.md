@@ -2,18 +2,18 @@
 
 Go implementation of the Kibana degradation scenario runner.
 
-Milestone 0 contains only the command-line stub. It does not read YAML or start Toxiproxy,
-Elasticsearch, or Kibana yet.
+Milestone 1 validates YAML scenario files. It does not start Toxiproxy, Elasticsearch,
+or Kibana yet.
 
-## Run the stub
+## Validate a scenario
 
 ```bash
 go run ./cmd/kibana-degradation-runner --help
-go run ./cmd/kibana-degradation-runner validate scenarios/example.yml
-go run ./cmd/kibana-degradation-runner up scenarios/example.yml
+go run ./cmd/kibana-degradation-runner validate scenarios/ccs_slow_remote.yml
 ```
 
-`validate` and `up` currently return `not implemented yet` with exit code `1`.
+`validate` checks the YAML structure, required values, target references, and latency
+configuration. `up` still returns `not implemented yet` with exit code `1`.
 
 ## Verify the project
 
