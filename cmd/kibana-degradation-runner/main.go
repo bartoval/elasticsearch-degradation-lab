@@ -310,6 +310,30 @@ func runUpCommand(scenarioPath string) int {
 		}
 	}
 
+	for _, fault := range loadedScenario.Faults {
+		reportProgress(
+			fmt.Sprintf(
+				"Applying %dms latency fault %s to %s",
+				fault.LatencyMS,
+				fault.ID,
+				fault.Target,
+			),
+		)
+
+		faultError := toxiproxy.ApplyLatency(
+			runContext,
+			fault.Target,
+			fault.ID,
+			fault.LatencyMS,
+			fault.JitterMS,
+		)
+		if faultError != nil {
+			fmt.Fprintf(os.Stderr, "apply fault %s: %v\n", fault.ID, faultError)
+
+			return exitFailure
+		}
+	}
+
 	fmt.Fprintf(
 		os.Stdout,
 		"\nScenario %q infrastructure is ready.\n",
@@ -317,7 +341,7 @@ func runUpCommand(scenarioPath string) int {
 	)
 	fmt.Fprintln(
 		os.Stdout,
-		"CCS is connected and fixtures are ready. Network faults are not applied yet.",
+		"CCS is connected, fixtures are ready, and network faults are active.",
 	)
 
 	fmt.Fprintln(os.Stdout, "\nStart Kibana in another terminal:")
