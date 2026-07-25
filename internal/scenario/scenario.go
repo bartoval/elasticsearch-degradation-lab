@@ -3,9 +3,11 @@ package scenario
 import "fmt"
 
 const (
-	supportedVersion  = 1
-	coordinatorTarget = "coordinator"
-	latencyFaultType  = "latency"
+	supportedVersion    = 1
+	coordinatorTarget   = "coordinator"
+	latencyFaultType    = "latency"
+	minimalLogsPreset   = "minimal_logs"
+	minimalLookupPreset = "minimal_lookup"
 )
 
 // Scenario describes the infrastructure, test data, and network faults requested by a YAML file.
@@ -94,6 +96,16 @@ func (scenarioConfig Scenario) Validate() error {
 
 		if fixture.Preset == "" {
 			return fmt.Errorf("fixtures[%d].preset is required", fixtureIndex)
+		}
+
+		presetIsSupported := fixture.Preset == minimalLogsPreset ||
+			fixture.Preset == minimalLookupPreset
+		if !presetIsSupported {
+			return fmt.Errorf(
+				"fixtures[%d].preset %q is not supported",
+				fixtureIndex,
+				fixture.Preset,
+			)
 		}
 	}
 

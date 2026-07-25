@@ -282,6 +282,34 @@ func runUpCommand(scenarioPath string) int {
 		return exitFailure
 	}
 
+	for _, fixture := range loadedScenario.Fixtures {
+		targetNode := remoteNode
+		if fixture.Target == "coordinator" {
+			targetNode = coordinatorNode
+		}
+
+		reportProgress(
+			fmt.Sprintf(
+				"Applying fixture %s to %s",
+				fixture.Preset,
+				fixture.Target,
+			),
+		)
+
+		fixtureError := targetNode.ApplyFixture(runContext, fixture.Preset)
+		if fixtureError != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"apply fixture %s to %s: %v\n",
+				fixture.Preset,
+				fixture.Target,
+				fixtureError,
+			)
+
+			return exitFailure
+		}
+	}
+
 	fmt.Fprintf(
 		os.Stdout,
 		"\nScenario %q infrastructure is ready.\n",
@@ -289,7 +317,7 @@ func runUpCommand(scenarioPath string) int {
 	)
 	fmt.Fprintln(
 		os.Stdout,
-		"CCS is connected. Fixtures and network faults are not applied yet.",
+		"CCS is connected and fixtures are ready. Network faults are not applied yet.",
 	)
 
 	fmt.Fprintln(os.Stdout, "\nStart Kibana in another terminal:")

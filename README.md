@@ -58,16 +58,17 @@ configuration.
    ports `9201` and `9301`.
 6. Uses the same Kibana tool to start a coordinator on ports `9200` and `9300`.
 7. Connects the coordinator to the remote through Toxiproxy in CCS proxy mode.
-8. Waits for both clusters and the CCS connection, reporting progress every ten seconds.
-9. Prints the command for starting Kibana separately against the coordinator.
-10. Keeps the environment alive until you press `Ctrl+C`.
-11. Stops every process and releases its ports before exiting.
+8. Creates the fixtures declared by the scenario on the selected clusters.
+9. Waits for both clusters and the CCS connection, reporting progress every ten seconds.
+10. Prints the command for starting Kibana separately against the coordinator.
+11. Keeps the environment alive until you press `Ctrl+C`.
+12. Stops every process and releases its ports before exiting.
 
 The terminal shows concise progress. Complete output from each child process is stored
 under `.runtime/<scenario-id>/logs/`. If Elasticsearch fails or times out, the runner
 prints the latest log lines and the full log path.
 
-Fixtures and faults are not connected to `up` yet.
+Network faults are not connected to `up` yet.
 
 ## Scenario structure
 
