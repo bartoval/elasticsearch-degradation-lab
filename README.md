@@ -11,9 +11,18 @@ Kibana manually. Kibana remains a separate development process.
 
 - Go 1.26 or newer.
 - Native Linux or macOS on x64 or ARM64.
+- A bootstrapped Kibana checkout with `yarn` available in `PATH`.
 - Internet access the first time Toxiproxy is downloaded.
 
 Windows and WSL are not supported.
+
+By default, the runner expects the repositories to be siblings:
+
+```text
+Projects/
+├── kibana/
+└── kibana-degradation-runner/
+```
 
 ## Getting started
 
@@ -39,16 +48,24 @@ go run ./cmd/kibana-degradation-runner up scenarios/ccs_slow_remote.yml
 `validate` checks the YAML structure, required values, target references, and latency
 configuration.
 
-`up` currently:
+`up`:
 
 1. Downloads Toxiproxy 2.12.0 when it is not already cached.
 2. Verifies the downloaded binary with its SHA-256 checksum.
 3. Starts the Toxiproxy API at `http://127.0.0.1:8474`.
-4. Keeps the process alive until you press `Ctrl+C`.
-5. Stops Toxiproxy and releases its port before exiting.
+4. Uses Kibana's `scripts/es.js snapshot` tool to start a remote Elasticsearch on
+   ports `9201` and `9301`.
+5. Uses the same Kibana tool to start a coordinator on ports `9200` and `9300`.
+6. Waits for both clusters and reports startup progress every ten seconds.
+7. Prints the command for starting Kibana separately against the coordinator.
+8. Keeps the environment alive until you press `Ctrl+C`.
+9. Stops every process and releases its ports before exiting.
 
-Elasticsearch startup, CCS configuration, fixtures, and faults are not connected to
-`up` yet.
+The terminal shows concise progress. Complete output from each child process is stored
+under `.runtime/<scenario-id>/logs/`. If Elasticsearch fails or times out, the runner
+prints the latest log lines and the full log path.
+
+CCS configuration, fixtures, and faults are not connected to `up` yet.
 
 ## Scenario structure
 
@@ -70,7 +87,12 @@ Downloaded tools and process logs are stored under `.runtime/`, which is ignored
 ├── tools/
 │   └── toxiproxy/
 └── <scenario-id>/
+    ├── elasticsearch/
+    │   ├── coordinator/
+    │   └── remote-1/
     └── logs/
+        ├── elasticsearch-coordinator.log
+        ├── elasticsearch-remote-1.log
         └── toxiproxy.log
 ```
 

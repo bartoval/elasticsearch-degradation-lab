@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"kibana-degradation-runner/internal/elasticsearch"
 	"kibana-degradation-runner/internal/scenario"
 	"kibana-degradation-runner/internal/toxiproxy"
 )
@@ -21,6 +22,11 @@ const (
 	exitSuccess          = 0
 	exitFailure          = 1
 	exitInvalidArguments = 2
+
+	coordinatorHTTPPort      = 9200
+	coordinatorTransportPort = 9300
+	remoteHTTPPort           = 9201
+	remoteTransportPort      = 9301
 )
 
 // Command-line arguments:
@@ -95,7 +101,7 @@ func runValidateCommand(scenarioPath string) int {
 	return exitSuccess
 }
 
-// runUpCommand keeps Toxiproxy alive until the developer stops the environment with Ctrl+C.
+// runUpCommand resolves local paths before starting the scenario infrastructure.
 func runUpCommand(scenarioPath string) int {
 	loadedScenario, loadError := scenario.Load(scenarioPath)
 	if loadError != nil {
@@ -111,8 +117,12 @@ func runUpCommand(scenarioPath string) int {
 		return exitFailure
 	}
 
+	kibanaDirectory := filepath.Clean(
+		filepath.Join(projectDirectory, "..", "kibana"),
+	)
+
 	// Convert Ctrl+C and SIGTERM into shared cancellation so downloads,
-	// readiness checks, and the Toxiproxy process can stop together.
+	// readiness checks, and every child process can stop together.
 	runContext, stopSignals := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -120,19 +130,32 @@ func runUpCommand(scenarioPath string) int {
 	)
 	defer stopSignals()
 
-	runtimeDirectory := filepath.Join(projectDirectory, ".runtime")
-
-	// This callback lets the Toxiproxy package report progress without depending on CLI output.
+	// This callback lets internal packages report progress without depending on CLI output.
 	reportProgress := func(message string) {
 		fmt.Fprintf(os.Stdout, "[progress] %s\n", message)
 	}
+
+	if len(loadedScenario.Topology.Remotes) != 1 {
+		fmt.Fprintln(os.Stderr, "start scenario: up currently supports exactly one remote")
+
+		return exitFailure
+	}
+
+	scenarioIDIsPath := filepath.Base(loadedScenario.ID) != loadedScenario.ID
+	if scenarioIDIsPath || loadedScenario.ID == "." || loadedScenario.ID == ".." {
+		fmt.Fprintln(os.Stderr, "start scenario: scenario id cannot contain a path")
+
+		return exitFailure
+	}
+
+	runtimeDirectory := filepath.Join(projectDirectory, ".runtime")
+	sessionDirectory := filepath.Join(runtimeDirectory, loadedScenario.ID)
 
 	binaryPath, binaryError := toxiproxy.EnsureBinary(
 		runContext,
 		runtimeDirectory,
 		reportProgress,
 	)
-
 	if binaryError != nil {
 		if runContext.Err() != nil {
 			fmt.Fprintln(os.Stdout, "Scenario startup cancelled.")
@@ -145,58 +168,132 @@ func runUpCommand(scenarioPath string) int {
 		return exitFailure
 	}
 
-	logPath := filepath.Join(
-		runtimeDirectory,
-		loadedScenario.ID,
-		"logs",
-		"toxiproxy.log",
+	reportProgress("Starting Toxiproxy")
+
+	toxiproxyLog := filepath.Join(sessionDirectory, "logs", "toxiproxy.log")
+	toxiproxyServer, toxiproxyError := toxiproxy.Start(
+		runContext,
+		binaryPath,
+		toxiproxyLog,
 	)
-
-	fmt.Fprintln(os.Stdout, "[progress] Starting Toxiproxy")
-
-	toxiproxyServer, startError := toxiproxy.Start(runContext, binaryPath, logPath)
-	if startError != nil {
-		fmt.Fprintf(os.Stderr, "start scenario: %v\n", startError)
+	if toxiproxyError != nil {
+		fmt.Fprintf(os.Stderr, "start Toxiproxy: %v\n", toxiproxyError)
 
 		return exitFailure
 	}
 	defer toxiproxyServer.Stop()
 
-	readinessError := toxiproxyServer.WaitUntilReady(runContext)
-	if readinessError != nil {
-		if runContext.Err() != nil {
-			fmt.Fprintln(os.Stdout, "Scenario startup cancelled.")
-
-			return exitSuccess
-		}
-
-		fmt.Fprintf(os.Stderr, "start scenario: %v\n", readinessError)
+	if readinessError := toxiproxyServer.WaitUntilReady(runContext); readinessError != nil {
+		fmt.Fprintf(os.Stderr, "start Toxiproxy: %v\nFull log: %s\n", readinessError, toxiproxyLog)
 
 		return exitFailure
 	}
 
-	fmt.Fprintf(os.Stdout, "Toxiproxy is ready at %s.\n", toxiproxy.APIURL)
-	fmt.Fprintf(os.Stdout, "Logs: %s\n", logPath)
+	reportProgress("Toxiproxy is ready at " + toxiproxy.APIURL)
+
+	remoteNode, remoteError := startElasticsearch(
+		runContext,
+		kibanaDirectory,
+		sessionDirectory,
+		"remote",
+		elasticsearch.Options{
+			ID:            loadedScenario.Topology.Remotes[0].ID,
+			HTTPPort:      remoteHTTPPort,
+			TransportPort: remoteTransportPort,
+		},
+		reportProgress,
+	)
+	if remoteError != nil {
+		fmt.Fprintf(os.Stderr, "start scenario: %v\n", remoteError)
+
+		return exitFailure
+	}
+	defer remoteNode.Stop()
+
+	coordinatorNode, coordinatorError := startElasticsearch(
+		runContext,
+		kibanaDirectory,
+		sessionDirectory,
+		"coordinator",
+		elasticsearch.Options{
+			ID:            "coordinator",
+			HTTPPort:      coordinatorHTTPPort,
+			TransportPort: coordinatorTransportPort,
+		},
+		reportProgress,
+	)
+	if coordinatorError != nil {
+		fmt.Fprintf(os.Stderr, "start scenario: %v\n", coordinatorError)
+
+		return exitFailure
+	}
+	defer coordinatorNode.Stop()
+
+	fmt.Fprintf(
+		os.Stdout,
+		"\nScenario %q infrastructure is ready.\n",
+		loadedScenario.Name,
+	)
 	fmt.Fprintln(
 		os.Stdout,
-		"Elasticsearch, CCS, fixtures, and faults are not started in this milestone.",
+		"CCS, fixtures, and network faults are not applied yet.",
 	)
-	fmt.Fprintln(os.Stdout, "Press Ctrl+C to stop Toxiproxy.")
 
-	waitError := toxiproxyServer.Wait()
-	if runContext.Err() != nil {
-		fmt.Fprintln(os.Stdout, "Toxiproxy stopped.")
+	fmt.Fprintln(os.Stdout, "\nStart Kibana in another terminal:")
+	fmt.Fprintf(os.Stdout, "  cd %q\n", kibanaDirectory)
+	fmt.Fprintf(
+		os.Stdout,
+		"  yarn start --no-base-path --elasticsearch.hosts=%s\n",
+		coordinatorNode.URL(),
+	)
+	fmt.Fprintln(os.Stdout, "\nPress Ctrl+C here to stop the environment.")
 
-		return exitSuccess
+	<-runContext.Done()
+
+	fmt.Fprintln(os.Stdout, "\n[progress] Stopping scenario infrastructure")
+	coordinatorNode.Stop()
+	remoteNode.Stop()
+	toxiproxyServer.Stop()
+	fmt.Fprintln(os.Stdout, "Scenario infrastructure stopped.")
+
+	return exitSuccess
+}
+
+// startElasticsearch gives both local clusters identical progress and error handling.
+func startElasticsearch(
+	ctx context.Context,
+	kibanaDirectory string,
+	sessionDirectory string,
+	role string,
+	options elasticsearch.Options,
+	reportProgress func(string),
+) (*elasticsearch.Node, error) {
+	reportProgress(
+		fmt.Sprintf(
+			"Starting %s Elasticsearch (HTTP %d, transport %d)",
+			role,
+			options.HTTPPort,
+			options.TransportPort,
+		),
+	)
+
+	node, startError := elasticsearch.Start(
+		ctx,
+		kibanaDirectory,
+		sessionDirectory,
+		options,
+	)
+	if startError != nil {
+		return nil, fmt.Errorf("start %s Elasticsearch: %w", role, startError)
 	}
 
-	if waitError != nil {
-		fmt.Fprintf(os.Stderr, "Toxiproxy exited unexpectedly: %v\n", waitError)
+	reportProgress(fmt.Sprintf("%s Elasticsearch log: %s", role, node.LogPath()))
 
-		return exitFailure
+	if readinessError := node.WaitUntilReady(ctx, reportProgress); readinessError != nil {
+		node.Stop()
+
+		return nil, fmt.Errorf("wait for %s Elasticsearch: %w", role, readinessError)
 	}
 
-	fmt.Fprintln(os.Stderr, "Toxiproxy exited unexpectedly.")
-
-	return exitFailure
+	return node, nil
 }
