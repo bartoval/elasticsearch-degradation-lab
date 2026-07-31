@@ -1,0 +1,31 @@
+# Reproduces the fan-out caused by a broad source pattern across many CCS aliases.
+# It uses one physical remote process, so the scenario remains practical on a laptop.
+
+version: 1
+id: ccs_overview_fanout
+name: Overview CCS fan-out
+
+# aliasCount generates serverless-logging-001 through serverless-logging-100.
+topology:
+  remotes:
+    - id: remote-1
+      alias: serverless-logging
+      aliasCount: 100
+      skipUnavailable: true
+
+# Creates the named logs data stream locally and behind every generated CCS alias.
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+    name: logs-degradation-default
+  - target: coordinator
+    preset: minimal_logs
+    name: logs-degradation-default
+
+# Adds a visible, deterministic delay only to requests that cross CCS.
+faults:
+  - id: remote-latency
+    target: remote-1
+    type: latency
+    latencyMs: 25000
+    jitterMs: 0

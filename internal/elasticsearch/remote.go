@@ -17,19 +17,21 @@ type remoteInfo struct {
 	Connected bool `json:"connected"`
 }
 
-// ConfigureRemote connects the coordinator to Toxiproxy using Elasticsearch proxy mode.
-func (node *Node) ConfigureRemote(
+// ConfigureRemoteAliases connects logical CCS aliases to one physical remote through Toxiproxy.
+func (node *Node) ConfigureRemoteAliases(
 	ctx context.Context,
-	alias string,
+	aliases []string,
 	proxyPort int,
 	skipUnavailable bool,
 ) error {
-	prefix := "cluster.remote." + alias
-	settings := map[string]any{
-		prefix + ".mode":                     "proxy",
-		prefix + ".proxy_address":            localHost + ":" + strconv.Itoa(proxyPort),
-		prefix + ".proxy_socket_connections": 1,
-		prefix + ".skip_unavailable":         skipUnavailable,
+	settings := make(map[string]any, len(aliases)*4)
+
+	for _, alias := range aliases {
+		prefix := "cluster.remote." + alias
+		settings[prefix+".mode"] = "proxy"
+		settings[prefix+".proxy_address"] = localHost + ":" + strconv.Itoa(proxyPort)
+		settings[prefix+".proxy_socket_connections"] = 1
+		settings[prefix+".skip_unavailable"] = skipUnavailable
 	}
 
 	requestBody := map[string]any{
@@ -45,10 +47,10 @@ func (node *Node) ConfigureRemote(
 	)
 }
 
-// WaitForRemote reports connection progress until Elasticsearch confirms the CCS link.
-func (node *Node) WaitForRemote(
+// WaitForRemoteAliases reports progress until every logical CCS alias is connected.
+func (node *Node) WaitForRemoteAliases(
 	ctx context.Context,
-	alias string,
+	aliases []string,
 	reportProgress func(string),
 ) error {
 	timeout := time.NewTimer(remoteConnectionTimeout)
@@ -64,9 +66,9 @@ func (node *Node) WaitForRemote(
 	var lastError error
 
 	for {
-		connected, connectionError := node.remoteIsConnected(ctx, alias)
+		connected, connectionError := node.remoteAliasesAreConnected(ctx, aliases)
 		if connected {
-			reportProgress(fmt.Sprintf("Remote cluster %s is connected", alias))
+			reportProgress(fmt.Sprintf("%d remote cluster aliases are connected", len(aliases)))
 
 			return nil
 		}
@@ -78,22 +80,20 @@ func (node *Node) WaitForRemote(
 			return ctx.Err()
 		case processError := <-node.done:
 			return fmt.Errorf(
-				"Elasticsearch %s exited while waiting for remote cluster %s: %v",
+				"Elasticsearch %s exited while waiting for remote cluster aliases: %v",
 				node.id,
-				alias,
 				processError,
 			)
 		case <-timeout.C:
 			return fmt.Errorf(
-				"timed out waiting for remote cluster %s: %v",
-				alias,
+				"timed out waiting for remote cluster aliases: %v",
 				lastError,
 			)
 		case <-progressTicker.C:
 			reportProgress(
 				fmt.Sprintf(
-					"Waiting for remote cluster %s (%s elapsed). Last error: %v",
-					alias,
+					"Waiting for %d remote cluster aliases (%s elapsed). Last error: %v",
+					len(aliases),
 					time.Since(startedAt).Round(time.Second),
 					lastError,
 				),
@@ -103,8 +103,11 @@ func (node *Node) WaitForRemote(
 	}
 }
 
-// remoteIsConnected reads the coordinator's standard remote-cluster status endpoint.
-func (node *Node) remoteIsConnected(ctx context.Context, alias string) (bool, error) {
+// remoteAliasesAreConnected checks all aliases with one remote-cluster status request.
+func (node *Node) remoteAliasesAreConnected(
+	ctx context.Context,
+	aliases []string,
+) (bool, error) {
 	remotes := map[string]remoteInfo{}
 	requestError := node.requestJSON(
 		ctx,
@@ -117,13 +120,15 @@ func (node *Node) remoteIsConnected(ctx context.Context, alias string) (bool, er
 		return false, requestError
 	}
 
-	remote, exists := remotes[alias]
-	if !exists {
-		return false, fmt.Errorf("remote cluster %s is not present in _remote/info", alias)
-	}
+	for _, alias := range aliases {
+		remote, exists := remotes[alias]
+		if !exists {
+			return false, fmt.Errorf("remote cluster %s is not present in _remote/info", alias)
+		}
 
-	if !remote.Connected {
-		return false, fmt.Errorf("remote cluster %s is not connected", alias)
+		if !remote.Connected {
+			return false, fmt.Errorf("remote cluster %s is not connected", alias)
+		}
 	}
 
 	return true, nil

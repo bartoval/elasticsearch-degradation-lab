@@ -189,15 +189,10 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 		reportProgress,
 	)
 	if binaryError != nil {
-		if runContext.Err() != nil {
-			fmt.Fprintln(os.Stdout, "Scenario startup cancelled.")
-
-			return exitSuccess
-		}
-
-		fmt.Fprintf(os.Stderr, "prepare Toxiproxy: %v\n", binaryError)
-
-		return exitFailure
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("prepare Toxiproxy: %w", binaryError),
+		)
 	}
 
 	reportProgress("Starting Toxiproxy")
@@ -209,16 +204,18 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 		toxiproxyLog,
 	)
 	if toxiproxyError != nil {
-		fmt.Fprintf(os.Stderr, "start Toxiproxy: %v\n", toxiproxyError)
-
-		return exitFailure
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("start Toxiproxy: %w", toxiproxyError),
+		)
 	}
 	defer toxiproxyServer.Stop()
 
 	if readinessError := toxiproxyServer.WaitUntilReady(runContext); readinessError != nil {
-		fmt.Fprintf(os.Stderr, "start Toxiproxy: %v\nFull log: %s\n", readinessError, toxiproxyLog)
-
-		return exitFailure
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("start Toxiproxy: %w\nFull log: %s", readinessError, toxiproxyLog),
+		)
 	}
 
 	reportProgress("Toxiproxy is ready at " + toxiproxy.APIURL)
@@ -239,9 +236,10 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 		remoteTransportPort,
 	)
 	if proxyError != nil {
-		fmt.Fprintf(os.Stderr, "start scenario: %v\n", proxyError)
-
-		return exitFailure
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("start scenario: %w", proxyError),
+		)
 	}
 
 	remoteNode, remoteError := startElasticsearch(
@@ -257,11 +255,12 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 		reportProgress,
 	)
 	if remoteError != nil {
-		fmt.Fprintf(os.Stderr, "start scenario: %v\n", remoteError)
-
-		return exitFailure
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("start scenario: %w", remoteError),
+		)
 	}
-	defer remoteNode.Stop()
+	defer reportStopFailure("remote Elasticsearch", remoteNode.Stop)
 
 	coordinatorNode, coordinatorError := startElasticsearch(
 		runContext,
@@ -276,41 +275,45 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 		reportProgress,
 	)
 	if coordinatorError != nil {
-		fmt.Fprintf(os.Stderr, "start scenario: %v\n", coordinatorError)
-
-		return exitFailure
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("start scenario: %w", coordinatorError),
+		)
 	}
-	defer coordinatorNode.Stop()
+	defer reportStopFailure("coordinator Elasticsearch", coordinatorNode.Stop)
 
+	remoteAliases := remote.Aliases()
 	reportProgress(
 		fmt.Sprintf(
-			"Configuring CCS alias %s through port %d",
-			remote.Alias,
+			"Configuring %d CCS aliases through port %d",
+			len(remoteAliases),
 			remoteProxyPort,
 		),
 	)
 
-	configurationError := coordinatorNode.ConfigureRemote(
+	configurationError := coordinatorNode.ConfigureRemoteAliases(
 		runContext,
-		remote.Alias,
+		remoteAliases,
 		remoteProxyPort,
 		remote.SkipUnavailable,
 	)
 	if configurationError != nil {
-		fmt.Fprintf(os.Stderr, "configure remote cluster: %v\n", configurationError)
-
-		return exitFailure
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("configure remote cluster: %w", configurationError),
+		)
 	}
 
-	connectionError := coordinatorNode.WaitForRemote(
+	connectionError := coordinatorNode.WaitForRemoteAliases(
 		runContext,
-		remote.Alias,
+		remoteAliases,
 		reportProgress,
 	)
 	if connectionError != nil {
-		fmt.Fprintf(os.Stderr, "connect remote cluster: %v\n", connectionError)
-
-		return exitFailure
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("connect remote cluster: %w", connectionError),
+		)
 	}
 
 	fixtureError := applyFixtures(
@@ -321,16 +324,12 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 		reportProgress,
 	)
 	if fixtureError != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", fixtureError)
-
-		return exitFailure
+		return reportStartupFailure(runContext, fixtureError)
 	}
 
 	faultError := applyFaults(runContext, loadedScenario.Faults, reportProgress)
 	if faultError != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", faultError)
-
-		return exitFailure
+		return reportStartupFailure(runContext, faultError)
 	}
 
 	fmt.Fprintf(
@@ -340,18 +339,67 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 	)
 	fmt.Fprintln(
 		os.Stdout,
-		"CCS is connected, fixtures are ready, and network faults are active.",
+		"CCS is connected, fixtures are ready, and the scenario is active.",
 	)
 
 	fmt.Fprintln(os.Stdout, "\nStart Kibana separately using your normal development command.")
 	fmt.Fprintln(os.Stdout, "\nPress Ctrl+C here to stop the environment.")
 
-	<-runContext.Done()
-	stopSignals()
+	select {
+	case <-runContext.Done():
+		stopSignals()
+	case processError := <-toxiproxyServer.Exited():
+		if runContext.Err() == nil {
+			return reportUnexpectedExit("Toxiproxy", processError, toxiproxyLog)
+		}
+	case processError := <-remoteNode.Exited():
+		if runContext.Err() == nil {
+			return reportUnexpectedExit("remote Elasticsearch", processError, remoteNode.LogPath())
+		}
+	case processError := <-coordinatorNode.Exited():
+		if runContext.Err() == nil {
+			return reportUnexpectedExit(
+				"coordinator Elasticsearch",
+				processError,
+				coordinatorNode.LogPath(),
+			)
+		}
+	}
 
 	fmt.Fprintln(os.Stdout, "\n[progress] Stopping scenario infrastructure")
 
 	return exitSuccess
+}
+
+// reportStartupFailure treats user cancellation consistently throughout scenario preparation.
+func reportStartupFailure(ctx context.Context, startupError error) int {
+	if ctx.Err() != nil {
+		fmt.Fprintln(os.Stdout, "Scenario startup cancelled.")
+
+		return exitSuccess
+	}
+
+	fmt.Fprintln(os.Stderr, startupError)
+
+	return exitFailure
+}
+
+// reportUnexpectedExit stops a session that can no longer represent the declared scenario.
+func reportUnexpectedExit(component string, processError error, logPath string) int {
+	fmt.Fprintf(os.Stderr, "\n%s exited while the scenario was active", component)
+	if processError != nil {
+		fmt.Fprintf(os.Stderr, ": %v", processError)
+	}
+	fmt.Fprintf(os.Stderr, "\nFull log: %s\n", logPath)
+
+	return exitFailure
+}
+
+// reportStopFailure keeps cleanup problems visible without hiding the original result.
+func reportStopFailure(component string, stop func() error) {
+	if stopError := stop(); stopError != nil {
+		fmt.Fprintf(os.Stderr, "stop %s: %v\n", component, stopError)
+	}
 }
 
 // startElasticsearch gives both local clusters identical progress and error handling.
@@ -385,7 +433,15 @@ func startElasticsearch(
 	reportProgress(fmt.Sprintf("%s Elasticsearch log: %s", role, node.LogPath()))
 
 	if readinessError := node.WaitUntilReady(ctx, reportProgress); readinessError != nil {
-		node.Stop()
+		stopError := node.Stop()
+		if stopError != nil {
+			return nil, fmt.Errorf(
+				"wait for %s Elasticsearch: %w; cleanup failed: %v",
+				role,
+				readinessError,
+				stopError,
+			)
+		}
 
 		return nil, fmt.Errorf("wait for %s Elasticsearch: %w", role, readinessError)
 	}
@@ -419,9 +475,9 @@ func applyFixtures(
 
 		switch fixture.Preset {
 		case scenario.FixturePresetMinimalLogs:
-			fixtureError = targetNode.ApplyMinimalLogs(ctx)
+			fixtureError = targetNode.ApplyMinimalLogs(ctx, fixture.Name)
 		case scenario.FixturePresetMinimalLookup:
-			fixtureError = targetNode.ApplyMinimalLookup(ctx)
+			fixtureError = targetNode.ApplyMinimalLookup(ctx, fixture.Name)
 		default:
 			return fmt.Errorf("fixture preset %q is not supported", fixture.Preset)
 		}

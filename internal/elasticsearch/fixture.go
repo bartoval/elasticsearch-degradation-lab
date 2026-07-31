@@ -7,10 +7,8 @@ import (
 	"time"
 )
 
-// ApplyMinimalLogs creates one logs data stream and one document on the remote.
-func (node *Node) ApplyMinimalLogs(ctx context.Context) error {
-	const dataStream = "logs-degradation-default"
-
+// ApplyMinimalLogs creates a logs data stream and one representative document.
+func (node *Node) ApplyMinimalLogs(ctx context.Context, dataStream string) error {
 	createError := node.requestJSON(
 		ctx,
 		http.MethodPut,
@@ -44,10 +42,8 @@ func (node *Node) ApplyMinimalLogs(ctx context.Context) error {
 	return nil
 }
 
-// ApplyMinimalLookup creates one coordinator lookup index and one enrichment document.
-func (node *Node) ApplyMinimalLookup(ctx context.Context) error {
-	const indexName = "degradation-lookup"
-
+// ApplyMinimalLookup creates a lookup index and one enrichment document.
+func (node *Node) ApplyMinimalLookup(ctx context.Context, indexName string) error {
 	indexDefinition := map[string]any{
 		"settings": map[string]any{
 			"index.mode": "lookup",

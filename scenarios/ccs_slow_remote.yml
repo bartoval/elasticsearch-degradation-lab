@@ -6,21 +6,23 @@ version: 1
 id: ccs_slow_remote
 name: Slow CCS remote
 
-# Describes the single remote Elasticsearch cluster supported by the current MVP.
+# Describes one physical remote and its single CCS alias.
 topology:
   remotes:
     - id: remote-1
       alias: remote-1
       skipUnavailable: true
 
-# Describes zero or more test-data fixtures to create on the configured clusters.
+# Describes zero or more test-data fixtures, including their generated resource names.
 fixtures:
   - target: remote-1
     preset: minimal_logs
+    name: logs-degradation-default
   - target: coordinator
     preset: minimal_lookup
+    name: degradation-lookup
 
-# Describes one or more network degradations to apply after the clusters are ready.
+# Describes zero or more network degradations to apply after the clusters are ready.
 faults:
   - id: remote-1-latency
     target: remote-1

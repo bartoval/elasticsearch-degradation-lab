@@ -117,6 +117,11 @@ func (server *Server) WaitUntilReady(ctx context.Context) error {
 	}
 }
 
+// Exited reports an unexpected Toxiproxy exit while the scenario is active.
+func (server *Server) Exited() <-chan error {
+	return server.done
+}
+
 // Stop cancels the child context and waits for the process to release its resources.
 func (server *Server) Stop() {
 	server.cancelProcess()

@@ -3,6 +3,7 @@ package scenario
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 )
 
 const (
@@ -38,13 +39,37 @@ type Topology struct {
 type Remote struct {
 	ID              string `yaml:"id"`
 	Alias           string `yaml:"alias"`
+	AliasCount      int    `yaml:"aliasCount"`
 	SkipUnavailable bool   `yaml:"skipUnavailable"`
+}
+
+// Aliases returns one explicit alias or a numbered set for fan-out scenarios.
+func (remote Remote) Aliases() []string {
+	if remote.AliasCount <= 1 {
+		return []string{remote.Alias}
+	}
+
+	numberWidth := len(strconv.Itoa(remote.AliasCount))
+	aliases := make([]string, 0, remote.AliasCount)
+
+	for aliasNumber := 1; aliasNumber <= remote.AliasCount; aliasNumber++ {
+		alias := fmt.Sprintf(
+			"%s-%0*d",
+			remote.Alias,
+			numberWidth,
+			aliasNumber,
+		)
+		aliases = append(aliases, alias)
+	}
+
+	return aliases
 }
 
 // Fixture selects the data preset that will be created on a scenario target.
 type Fixture struct {
 	Target string        `yaml:"target"`
 	Preset FixturePreset `yaml:"preset"`
+	Name   string        `yaml:"name"`
 }
 
 // Fault describes a network degradation applied to a scenario target.
@@ -91,6 +116,10 @@ func (scenarioConfig Scenario) Validate() error {
 			return fmt.Errorf("topology.remotes[%d].alias is required", remoteIndex)
 		}
 
+		if remote.AliasCount < 0 {
+			return fmt.Errorf("topology.remotes[%d].aliasCount cannot be negative", remoteIndex)
+		}
+
 		if !isSafeIdentifier(remote.ID) {
 			return fmt.Errorf("topology.remotes[%d].id cannot contain a path", remoteIndex)
 		}
@@ -130,6 +159,14 @@ func (scenarioConfig Scenario) Validate() error {
 			return fmt.Errorf("fixtures[%d].preset is required", fixtureIndex)
 		}
 
+		if fixture.Name == "" {
+			return fmt.Errorf("fixtures[%d].name is required", fixtureIndex)
+		}
+
+		if !isSafeIdentifier(fixture.Name) {
+			return fmt.Errorf("fixtures[%d].name cannot contain a path", fixtureIndex)
+		}
+
 		presetIsSupported := fixture.Preset == FixturePresetMinimalLogs ||
 			fixture.Preset == FixturePresetMinimalLookup
 		if !presetIsSupported {
@@ -139,10 +176,6 @@ func (scenarioConfig Scenario) Validate() error {
 				fixture.Preset,
 			)
 		}
-	}
-
-	if len(scenarioConfig.Faults) == 0 {
-		return fmt.Errorf("faults must contain at least one fault")
 	}
 
 	faultIDs := make(map[string]bool, len(scenarioConfig.Faults))

@@ -45,6 +45,8 @@ type Node struct {
 	id            string
 	url           string
 	logPath       string
+	httpPort      int
+	transportPort int
 	cancelProcess context.CancelFunc
 	done          chan error
 }
@@ -131,6 +133,8 @@ func Start(
 		id:            options.ID,
 		url:           "http://" + net.JoinHostPort(localHost, strconv.Itoa(options.HTTPPort)),
 		logPath:       logPath,
+		httpPort:      options.HTTPPort,
+		transportPort: options.TransportPort,
 		cancelProcess: cancelProcess,
 		done:          make(chan error, 1),
 	}
@@ -210,10 +214,17 @@ func (node *Node) LogPath() string {
 	return node.logPath
 }
 
-// Stop terminates the launcher and its Elasticsearch process group.
-func (node *Node) Stop() {
+// Exited reports an unexpected launcher exit while the scenario is active.
+func (node *Node) Exited() <-chan error {
+	return node.done
+}
+
+// Stop terminates the launcher and waits until Elasticsearch releases its ports.
+func (node *Node) Stop() error {
 	node.cancelProcess()
 	<-node.done
+
+	return waitForPortsAvailable(node.httpPort, node.transportPort)
 }
 
 // isReady uses the same authenticated cluster-health signal as the JavaScript prototype.
@@ -324,6 +335,41 @@ func assertPortAvailable(port int) error {
 	defer listener.Close()
 
 	return nil
+}
+
+// waitForPortsAvailable prevents an immediate restart from racing Elasticsearch shutdown.
+func waitForPortsAvailable(ports ...int) error {
+	timeout := time.NewTimer(shutdownTimeout)
+	defer timeout.Stop()
+
+	checkTicker := time.NewTicker(100 * time.Millisecond)
+	defer checkTicker.Stop()
+
+	var lastError error
+
+	for {
+		allPortsAreAvailable := true
+
+		for _, port := range ports {
+			portError := assertPortAvailable(port)
+			if portError != nil {
+				allPortsAreAvailable = false
+				lastError = portError
+
+				break
+			}
+		}
+
+		if allPortsAreAvailable {
+			return nil
+		}
+
+		select {
+		case <-timeout.C:
+			return fmt.Errorf("timed out waiting for Elasticsearch ports to be released: %w", lastError)
+		case <-checkTicker.C:
+		}
+	}
 }
 
 // snapshotArguments isolates the nodes and skips realm setup because security is disabled.
