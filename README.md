@@ -45,6 +45,37 @@ separately.
 
 The first run requires internet access to download Toxiproxy.
 
+### Ports
+
+Kibana needs no configuration, because the address it already expects is the one to
+use. That address is a proxy rather than Elasticsearch itself, so that every request
+Kibana makes can be observed and delayed, and so that none of them can bypass the
+proxy by accident.
+
+| Port | What answers |
+| --- | --- |
+| 9200 | proxy in front of the coordinator, which is what Kibana connects to |
+| 9210 | the coordinator itself |
+| 9201 | the remote |
+| 9401-9500 | one proxy per CCS alias |
+| 8474 | the Toxiproxy API, which reports bytes per proxy |
+
+The two doors differ only in whether the coordinator's own proxy is crossed. A fault
+on a remote sits *behind* the coordinator, so a cross-cluster request pays it either
+way:
+
+```text
+                  ┌─ 9200, through the coordinator proxy ─┐
+  you / Kibana ───┤                                        ├─► coordinator ─► alias proxies ─► remote
+                  └─ 9210, straight to the coordinator ────┘                   9401-9500
+                                                                        remote faults apply here
+```
+
+Measure on 9210, so that the coordinator proxy is not part of the number. Use 9200
+when the coordinator proxy is itself what you want to measure, which is the case
+only when a fault targets `coordinator`; the difference between the two ports is
+then the cost that fault adds to every request Kibana makes.
+
 ## Compare broad and narrow queries
 
 The overview scenario creates 100 logical CCS aliases backed by one physical remote
@@ -97,10 +128,39 @@ accumulate across aliases: it costs roughly one slow round trip, not one per
 alias. These scenarios reproduce the breadth of the fan-out, which is what makes
 `_field_caps`, index resolution, and the default ES|QL query expensive.
 
-- [`ccs_overview_fanout.yml`](scenarios/ccs_overview_fanout.yml) reproduces a broad
-  query across 100 CCS aliases.
+A fault targets either a remote or `coordinator`. Targeting the coordinator degrades
+what Kibana asks Elasticsearch directly, saved objects included, which is how the
+cost of a page load can be told apart from the cost of crossing to the remotes.
+
+The `bulk_logs` preset creates many logs data streams, each with its own field names,
+for scenarios where the metadata is the expensive part:
+
+```yaml
+fixtures:
+  - target: remote-1
+    preset: bulk_logs
+    name: logs-fanout
+    dataStreams: 200
+    fieldsPerStream: 300
+```
+
+`dataStreams` sets how much index resolution costs, since that is what
+`_resolve/index` returns. `fieldsPerStream` sets how much `_field_caps` costs and how
+large a field list Kibana has to hold; the names are distinct per data stream because
+`_field_caps` merges by name, so streams sharing one schema would collapse into a
+single small response no matter how many existed. No documents are indexed, since
+both endpoints read mappings only.
+
 - [`ccs_slow_remote.yml`](scenarios/ccs_slow_remote.yml) adds 25 seconds of remote
   latency for testing loading and cancellation behavior.
+- [`ccs_overview_fanout.yml`](scenarios/ccs_overview_fanout.yml) reproduces a broad
+  query across 100 CCS aliases.
+- [`overview_cluster.yml`](scenarios/overview_cluster.yml) reproduces a deployment
+  connected to many slow remotes, including the Kibana settings that make Discover
+  choose the broad default query.
+- [`discover_reload_cost.yml`](scenarios/discover_reload_cost.yml) puts a small delay
+  on every request Kibana makes, so that what Discover re-requests on each navigation
+  becomes visible and countable.
 
 Validate it without starting any processes:
 

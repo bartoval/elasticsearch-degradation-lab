@@ -27,7 +27,13 @@ const (
 const kibanaDirectoryOption = "--kibana-dir"
 
 const (
-	coordinatorHTTPPort      = 9200
+	// coordinatorProxyPort is where Kibana connects, because it is Elasticsearch's
+	// usual port and Kibana needs no configuration to find it. The coordinator
+	// itself listens one range higher, so every request Kibana makes crosses a
+	// proxy and none of them can quietly bypass it.
+	coordinatorProxyPort = 9200
+
+	coordinatorHTTPPort      = 9210
 	coordinatorTransportPort = 9300
 	remoteHTTPPort           = 9201
 	remoteTransportPort      = 9301
@@ -237,6 +243,29 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 		),
 	)
 
+	reportProgress(
+		fmt.Sprintf(
+			"Creating coordinator proxy on port %d, which Kibana should use",
+			coordinatorProxyPort,
+		),
+	)
+
+	// Kibana reaches the coordinator through a proxy of its own, so that a fault
+	// can degrade what Kibana asks Elasticsearch directly, saved objects included,
+	// rather than only what crosses to the remotes.
+	coordinatorProxyError := toxiproxy.CreateProxy(
+		runContext,
+		scenario.CoordinatorTarget,
+		coordinatorProxyPort,
+		coordinatorHTTPPort,
+	)
+	if coordinatorProxyError != nil {
+		return reportStartupFailure(
+			runContext,
+			fmt.Errorf("start scenario: coordinator proxy: %w", coordinatorProxyError),
+		)
+	}
+
 	// Each alias gets its own proxy in front of the same physical transport port.
 	// Cross-cluster fan-out runs in parallel, so a wide topology only hurts when
 	// the aliases can be degraded independently and one of them lands in the tail.
@@ -350,7 +379,8 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 	}
 
 	proxyNamesByTarget := map[string][]string{
-		remote.ID: remoteAliases,
+		remote.ID:                  remoteAliases,
+		scenario.CoordinatorTarget: {scenario.CoordinatorTarget},
 	}
 
 	faultError := applyFaults(

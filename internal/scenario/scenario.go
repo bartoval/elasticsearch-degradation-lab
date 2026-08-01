@@ -249,13 +249,6 @@ func (scenarioConfig Scenario) Validate() error {
 			)
 		}
 
-		if fault.Target == CoordinatorTarget {
-			return fmt.Errorf(
-				"faults[%d].target must reference a remote cluster",
-				faultIndex,
-			)
-		}
-
 		if fault.Type != latencyFaultType {
 			return fmt.Errorf(
 				"faults[%d].type must be %q",

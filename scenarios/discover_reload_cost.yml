@@ -1,0 +1,62 @@
+# Makes the cost of everything Discover re-requests on every navigation visible,
+# for the question of what is worth caching.
+#
+# Returning to Discover re-fetches data view metadata, the data view list, field
+# caps, the documents search, the histogram and total hits, even when nothing about
+# the requested state changed. At normal speed those requests hide in the noise;
+# with a delay in front of them each one becomes a step in the waterfall that can
+# be counted and attributed.
+#
+# Kibana talks to the coordinator through a proxy on the usual port 9200, while the
+# coordinator itself listens on 9210, so every request Kibana makes to Elasticsearch
+# crosses the proxy and none can quietly bypass it. That includes saved objects,
+# which is where the data view list and the saved search come from.
+#
+# The delay is deliberately small. The point is not to make Kibana unusable but to
+# separate the requests from each other, so a second visit can be compared with the
+# first: a cache that works shows up as a request that no longer appears.
+#
+# HOW TO READ IT
+#   1. Open Discover, with the browser network tab recording. Note every request.
+#   2. Navigate away and back. Note which ones fire again.
+#   3. Anything that fires twice is a caching candidate, and its cost is the delay
+#      it just paid.
+# Toxiproxy's own API at http://127.0.0.1:8474 reports bytes per proxy, so "the
+# cache stopped this request" can be asserted rather than eyeballed.
+#
+# The remote is present so that cross-cluster requests can be told apart from
+# coordinator-only ones: a fault on the remote is much larger than the one on the
+# coordinator, so anything slow by seconds crossed CCS.
+
+version: 1
+id: discover_reload_cost
+name: Discover reload cost
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: remote-1
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+    name: logs-degradation-default
+  - target: coordinator
+    preset: minimal_logs
+    name: logs-degradation-default
+
+faults:
+  # Every Kibana request to Elasticsearch, saved objects included, pays this.
+  - id: coordinator-request-cost
+    target: coordinator
+    type: latency
+    latencyMs: 300
+    jitterMs: 0
+  # Cross-cluster requests pay noticeably more, so they are distinguishable at a
+  # glance from coordinator-only ones.
+  - id: remote-request-cost
+    target: remote-1
+    type: latency
+    latencyMs: 3000
+    jitterMs: 0
