@@ -1,0 +1,88 @@
+# Reproduces the Elastic "overview cluster" environment described in
+# kibana#281180, the analysis of which produced the discover:defaultEsqlQuery
+# setting (kibana#281319).
+#
+# The reported environment: an Observability deployment cross-cluster connected to
+# 100+ remotes (60 regions x 2 clusters), with observability:logSources set to a
+# very broad pattern. Opening Discover ran a heavy default ES|QL query across every
+# remote, /internal/esql/autocomplete/sources/all took ~57s, and the browser tab
+# grew to 3.5GB.
+#
+# The alias prefix is deliberately serverless-logging, so the reported source
+# pattern "serverless-logging-*:logs-*" matches all 100 generated aliases exactly
+# as it does on the real deployment.
+#
+# APPLY THESE KIBANA SETTINGS, in a space using the Observability solution view.
+# Without them Discover will not choose the broad default query and the scenario
+# reproduces nothing:
+#
+#   observability:logSources   logs-*-*,logs-*,filebeat-*,serverless-logging-*:logs-*
+#   discover:searchOnPageLoad  on
+#
+# Then open Discover in ES|QL mode and watch, in the network tab,
+# /internal/esql/autocomplete/sources/all together with the tab's memory use.
+#
+# The setting under test, available in 9.6.0+, overrides only the default query:
+#
+#   discover:defaultEsqlQuery  FROM logs-degradation-default
+#
+# Expect the heavy default query to disappear and the autocomplete request to
+# remain, because that route resolves ['*', '*:*'] unconditionally and reads no
+# advanced setting.
+#
+# The two knobs drive different halves of the symptom, and only one of them drives
+# response time:
+#
+#   dataStreams x fieldsPerStream  is the size of the field union _field_caps
+#                                  returns, because every stream is mapped with
+#                                  its own field names. 200 x 300 = 60000 distinct
+#                                  fields, which is what Kibana has to hold. This
+#                                  is the half that shows up as browser memory.
+#   latencyMs                      is the response time. Measured here, raising
+#                                  dataStreams from 200 to 1000 moved the endpoint
+#                                  only from 0.40s to 0.86s, which the latency
+#                                  below dwarfs. Do not raise it hoping for time.
+#
+# Elasticsearch needs heap for those mappings; the runner already raises it.
+
+version: 1
+id: overview_cluster
+name: Overview cluster
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: serverless-logging
+      aliasCount: 100
+      skipUnavailable: true
+
+fixtures:
+  # 200 data streams behind 100 aliases resolve to roughly 40000 entries, since
+  # _resolve/index returns each data stream together with its backing index. That
+  # is enough for the source patterns to be realistic; it is not what makes the
+  # environment slow.
+  - target: remote-1
+    preset: bulk_logs
+    name: logs-fanout
+    dataStreams: 200
+    fieldsPerStream: 300
+  # The local-only target for discover:defaultEsqlQuery to point at.
+  - target: coordinator
+    preset: minimal_logs
+    name: logs-degradation-default
+
+# The latency models the remote's TOTAL RESPONSE TIME, not the network round trip.
+# What the coordinator waits for is however long a loaded production cluster takes
+# to resolve logs-* across its own thousands of indices while serving live traffic,
+# and Kibana cannot tell a slow network from a slow server. Measured on this setup,
+# fan-out is parallel and costs max() rather than the sum, so a hundred slow remotes
+# cost the same as one slow remote: this single number is the whole symptom.
+#
+# The wide jitter stands in for a deployment spread over many regions, where the
+# slowest of a hundred draws is what the coordinator actually waits for.
+faults:
+  - id: loaded-remote-response-time
+    target: remote-1
+    type: latency
+    latencyMs: 10000
+    jitterMs: 5000

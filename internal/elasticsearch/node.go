@@ -16,9 +16,13 @@ import (
 )
 
 const (
-	localHost               = "127.0.0.1"
-	elasticsearchUsername   = "elastic"
-	elasticsearchPassword   = "changeme"
+	localHost = "127.0.0.1"
+
+	// These credentials are the ones Kibana's own scripts/es.js configures in the
+	// native realm, so they authenticate every request the runner makes.
+	elasticsearchUsername = "elastic"
+	elasticsearchPassword = "changeme"
+
 	readinessTimeout        = 10 * time.Minute
 	readinessInterval       = 1 * time.Second
 	progressInterval        = 10 * time.Second
@@ -26,6 +30,14 @@ const (
 	setupRequestTimeout     = 30 * time.Second
 	shutdownTimeout         = 10 * time.Second
 	recentLogBytes          = 4 * 1024
+
+	// maxShardsPerNode has to cover the largest fan-out fixture the scenario
+	// package allows, since every generated data stream costs one shard.
+	maxShardsPerNode = 5000
+
+	// elasticsearchJavaOpts raises the heap above the snapshot default, which a
+	// fan-out fixture exhausts while answering _field_caps over its mappings.
+	elasticsearchJavaOpts = "-Xms2g -Xmx2g"
 )
 
 var (
@@ -110,6 +122,9 @@ func Start(
 		)...,
 	)
 	command.Dir = kibanaDirectory
+	// A fan-out fixture holds tens of thousands of field mappings in cluster
+	// state, and _field_caps over them exhausts the small default heap.
+	command.Env = append(os.Environ(), "ES_JAVA_OPTS="+elasticsearchJavaOpts)
 	command.Stdout = logFile
 	command.Stderr = logFile
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -372,7 +387,11 @@ func waitForPortsAvailable(ports ...int) error {
 	}
 }
 
-// snapshotArguments isolates the nodes and skips realm setup because security is disabled.
+// snapshotArguments isolates the two nodes while leaving Kibana's usual security
+// setup in place. Disabling security instead would start Elasticsearch without the
+// native realm, which makes Kibana return 404s and 500s from every route that asks
+// Elasticsearch about privileges. Transport TLS stays off because these are local
+// single-node clusters, where the bootstrap checks that would require it do not run.
 func snapshotArguments(
 	scriptPath string,
 	nodeDirectory string,
@@ -386,7 +405,6 @@ func snapshotArguments(
 		"--base-path",
 		nodeDirectory,
 		"--use-cached",
-		"--skipSecuritySetup",
 		"-E", "cluster.name=degradation-" + options.ID,
 		"-E", "node.name=" + options.ID,
 		"-E", "network.host=" + localHost,
@@ -395,6 +413,10 @@ func snapshotArguments(
 		"-E", "transport.port=" + strconv.Itoa(options.TransportPort),
 		"-E", "path.data=" + dataDirectory,
 		"-E", "path.logs=" + logDirectory,
-		"-E", "xpack.security.enabled=false",
+		"-E", "xpack.security.transport.ssl.enabled=false",
+		// A fan-out fixture creates one shard per data stream, so the default
+		// limit of 1000 shards per node caps the scenario long before the local
+		// machine runs out of room.
+		"-E", "cluster.max_shards_per_node=" + strconv.Itoa(maxShardsPerNode),
 	}
 }

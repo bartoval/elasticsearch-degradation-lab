@@ -48,7 +48,7 @@ The first run requires internet access to download Toxiproxy.
 ## Compare broad and narrow queries
 
 The overview scenario creates 100 logical CCS aliases backed by one physical remote
-and adds five seconds of latency to CCS traffic. Compare the broad source pattern from
+and adds wide-area latency to CCS traffic. Compare the broad source pattern from
 the overview cluster:
 
 ```esql
@@ -75,6 +75,27 @@ A scenario contains:
 - `topology`: one physical remote with one or more logical CCS aliases.
 - `fixtures`: zero or more test-data presets.
 - `faults`: zero or more network degradations.
+
+Setting `aliasCount` on the remote registers the same physical cluster under that
+many CCS aliases, numbered from the `alias` prefix:
+
+```yaml
+topology:
+  remotes:
+    - id: remote-1
+      alias: serverless-logging
+      aliasCount: 100
+```
+
+The coordinator then sees 100 remote clusters, each reached through its own
+Toxiproxy proxy on ports 9401-9500, while only two Elasticsearch processes run
+locally. A fault targeting the remote applies to every one of its proxies. The
+limit of 100 aliases comes from that reserved port range.
+
+Because cross-cluster requests fan out in parallel, a uniform latency does not
+accumulate across aliases: it costs roughly one slow round trip, not one per
+alias. These scenarios reproduce the breadth of the fan-out, which is what makes
+`_field_caps`, index resolution, and the default ES|QL query expensive.
 
 - [`ccs_overview_fanout.yml`](scenarios/ccs_overview_fanout.yml) reproduces a broad
   query across 100 CCS aliases.

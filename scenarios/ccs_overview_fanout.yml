@@ -1,11 +1,30 @@
 # Reproduces the fan-out caused by a broad source pattern across many CCS aliases.
 # It uses one physical remote process, so the scenario remains practical on a laptop.
+#
+# Cross-cluster fan-out is parallel, so a uniform latency does not add up across
+# aliases: the wall clock is roughly the slowest alias multiplied by the number of
+# sequential round trips in one operation, not the latency times the alias count.
+# What this scenario exposes is therefore the breadth of the fan-out itself, which
+# is what makes _field_caps, index resolution, and the default ES|QL query costly.
+# Reproducing the tail latency of a real deployment, where a handful of regions are
+# far slower than the rest, needs per-alias-subset faults and is not supported yet.
+#
+# Suggested Kibana comparison, in a space using the Observability solution view:
+#   observability:logSources  ->  logs-*,*:logs-*   (matches every generated alias)
+#   discover:searchOnPageLoad ->  on                (default; shows the problem)
+# Open Discover in ES|QL mode and measure time to first result together with the
+# duration of /internal/esql/autocomplete/sources/all in the network tab. Then set
+# discover:defaultEsqlQuery to a coordinator-only query such as
+# "FROM logs-degradation-default" and measure again. The remotes stay slow
+# throughout, so the setting works when Kibana stops reaching them by default.
+# See kibana#281180 and kibana#281319.
 
 version: 1
 id: ccs_overview_fanout
 name: Overview CCS fan-out
 
-# aliasCount generates serverless-logging-001 through serverless-logging-100.
+# aliasCount generates serverless-logging-001 through serverless-logging-100,
+# each registered as its own CCS alias in front of the same physical remote.
 topology:
   remotes:
     - id: remote-1
@@ -13,7 +32,8 @@ topology:
       aliasCount: 100
       skipUnavailable: true
 
-# Creates the named logs data stream locally and behind every generated CCS alias.
+# Creates the named logs data stream locally and behind every generated CCS alias,
+# so logs-*,*:logs-* resolves locally and through all 100 aliases.
 fixtures:
   - target: remote-1
     preset: minimal_logs
@@ -22,10 +42,12 @@ fixtures:
     preset: minimal_logs
     name: logs-degradation-default
 
-# Adds a visible, deterministic delay only to requests that cross CCS.
+# Applies wide-area latency rather than one catatonic remote: the point is the cost
+# of reaching many aliases, not the failure of a single one. Use ccs_slow_remote.yml
+# for the single very slow remote instead.
 faults:
-  - id: remote-latency
+  - id: remote-wan-latency
     target: remote-1
     type: latency
-    latencyMs: 25000
-    jitterMs: 0
+    latencyMs: 500
+    jitterMs: 200

@@ -31,7 +31,11 @@ const (
 	coordinatorTransportPort = 9300
 	remoteHTTPPort           = 9201
 	remoteTransportPort      = 9301
-	remoteProxyPort          = 9401
+
+	// remoteProxyBasePort opens the range reserved for per-alias proxies: alias
+	// number N listens on remoteProxyBasePort+N-1. The range ends at 9500, which
+	// is what scenario.MaxRemoteAliases bounds aliasCount to.
+	remoteProxyBasePort = 9401
 )
 
 // Command-line arguments:
@@ -221,25 +225,34 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 	reportProgress("Toxiproxy is ready at " + toxiproxy.APIURL)
 
 	remote := loadedScenario.Topology.Remotes[0]
+	remoteAliases := remote.Aliases()
+	lastProxyPort := remoteProxyBasePort + len(remoteAliases) - 1
 	reportProgress(
 		fmt.Sprintf(
-			"Creating transport proxy on port %d for remote %s",
-			remoteProxyPort,
+			"Creating %d transport proxies on ports %d-%d for remote %s",
+			len(remoteAliases),
+			remoteProxyBasePort,
+			lastProxyPort,
 			remote.ID,
 		),
 	)
 
-	proxyError := toxiproxy.CreateProxy(
-		runContext,
-		remote.ID,
-		remoteProxyPort,
-		remoteTransportPort,
-	)
-	if proxyError != nil {
-		return reportStartupFailure(
+	// Each alias gets its own proxy in front of the same physical transport port.
+	// Cross-cluster fan-out runs in parallel, so a wide topology only hurts when
+	// the aliases can be degraded independently and one of them lands in the tail.
+	for aliasIndex, alias := range remoteAliases {
+		proxyError := toxiproxy.CreateProxy(
 			runContext,
-			fmt.Errorf("start scenario: %w", proxyError),
+			alias,
+			remoteProxyBasePort+aliasIndex,
+			remoteTransportPort,
 		)
+		if proxyError != nil {
+			return reportStartupFailure(
+				runContext,
+				fmt.Errorf("start scenario: proxy for alias %s: %w", alias, proxyError),
+			)
+		}
 	}
 
 	remoteNode, remoteError := startElasticsearch(
@@ -282,20 +295,29 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 	}
 	defer reportStopFailure("coordinator Elasticsearch", coordinatorNode.Stop)
 
-	remoteAliases := remote.Aliases()
 	reportProgress(
 		fmt.Sprintf(
-			"Configuring %d CCS aliases through port %d",
+			"Configuring %d CCS aliases (%s .. %s) through ports %d-%d",
 			len(remoteAliases),
-			remoteProxyPort,
+			remoteAliases[0],
+			remoteAliases[len(remoteAliases)-1],
+			remoteProxyBasePort,
+			lastProxyPort,
 		),
 	)
 
+	aliasBindings := make([]elasticsearch.RemoteAliasBinding, len(remoteAliases))
+	for aliasIndex, alias := range remoteAliases {
+		aliasBindings[aliasIndex] = elasticsearch.RemoteAliasBinding{
+			Alias:           alias,
+			ProxyPort:       remoteProxyBasePort + aliasIndex,
+			SkipUnavailable: remote.SkipUnavailable,
+		}
+	}
+
 	configurationError := coordinatorNode.ConfigureRemoteAliases(
 		runContext,
-		remoteAliases,
-		remoteProxyPort,
-		remote.SkipUnavailable,
+		aliasBindings,
 	)
 	if configurationError != nil {
 		return reportStartupFailure(
@@ -327,7 +349,16 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 		return reportStartupFailure(runContext, fixtureError)
 	}
 
-	faultError := applyFaults(runContext, loadedScenario.Faults, reportProgress)
+	proxyNamesByTarget := map[string][]string{
+		remote.ID: remoteAliases,
+	}
+
+	faultError := applyFaults(
+		runContext,
+		loadedScenario.Faults,
+		proxyNamesByTarget,
+		reportProgress,
+	)
 	if faultError != nil {
 		return reportStartupFailure(runContext, faultError)
 	}
@@ -463,13 +494,7 @@ func applyFixtures(
 			targetNode = coordinatorNode
 		}
 
-		reportProgress(
-			fmt.Sprintf(
-				"Applying fixture %s to %s",
-				fixture.Preset,
-				fixture.Target,
-			),
-		)
+		reportProgress(fixtureDescription(fixture))
 
 		var fixtureError error
 
@@ -478,6 +503,14 @@ func applyFixtures(
 			fixtureError = targetNode.ApplyMinimalLogs(ctx, fixture.Name)
 		case scenario.FixturePresetMinimalLookup:
 			fixtureError = targetNode.ApplyMinimalLookup(ctx, fixture.Name)
+		case scenario.FixturePresetBulkLogs:
+			fixtureError = targetNode.ApplyBulkLogs(
+				ctx,
+				fixture.Name,
+				fixture.DataStreams,
+				fixture.FieldsPerStream,
+				reportProgress,
+			)
 		default:
 			return fmt.Errorf("fixture preset %q is not supported", fixture.Preset)
 		}
@@ -495,31 +528,61 @@ func applyFixtures(
 	return nil
 }
 
+// fixtureDescription states the size of a fixture up front, because a bulk preset
+// takes long enough that its cost should be visible before it starts.
+func fixtureDescription(fixture scenario.Fixture) string {
+	if fixture.Preset != scenario.FixturePresetBulkLogs {
+		return fmt.Sprintf("Applying fixture %s to %s", fixture.Preset, fixture.Target)
+	}
+
+	return fmt.Sprintf(
+		"Applying fixture %s to %s (%d indices, %d fields each)",
+		fixture.Preset,
+		fixture.Target,
+		fixture.DataStreams,
+		fixture.FieldsPerStream,
+	)
+}
+
 // applyFaults activates the latency conditions after the healthy topology is ready.
 func applyFaults(
 	ctx context.Context,
 	faults []scenario.Fault,
+	proxyNamesByTarget map[string][]string,
 	reportProgress func(string),
 ) error {
 	for _, fault := range faults {
+		proxyNames := proxyNamesByTarget[fault.Target]
+		if len(proxyNames) == 0 {
+			return fmt.Errorf("apply fault %s: target %q has no proxy", fault.ID, fault.Target)
+		}
+
 		reportProgress(
 			fmt.Sprintf(
-				"Applying %dms latency fault %s to %s",
+				"Applying %dms latency fault %s to %s across %d proxies",
 				fault.LatencyMS,
 				fault.ID,
 				fault.Target,
+				len(proxyNames),
 			),
 		)
 
-		faultError := toxiproxy.ApplyLatency(
-			ctx,
-			fault.Target,
-			fault.ID,
-			fault.LatencyMS,
-			fault.JitterMS,
-		)
-		if faultError != nil {
-			return fmt.Errorf("apply fault %s: %w", fault.ID, faultError)
+		for _, proxyName := range proxyNames {
+			faultError := toxiproxy.ApplyLatency(
+				ctx,
+				proxyName,
+				fault.ID,
+				fault.LatencyMS,
+				fault.JitterMS,
+			)
+			if faultError != nil {
+				return fmt.Errorf(
+					"apply fault %s to proxy %s: %w",
+					fault.ID,
+					proxyName,
+					faultError,
+				)
+			}
 		}
 	}
 
