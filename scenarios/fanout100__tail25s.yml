@@ -1,0 +1,34 @@
+# INFRA: 100 CCS aliases, alias #50 at 25s tail latency, minimal logs fixture.
+#
+# USE CASES (pick any):
+#   - Stack Management remote-cluster health / ResolveCluster refresh
+#   - Remote cluster list UI blocked on the slowest alias
+#   - Any CCS fan-out that waits for the slowest connection
+#
+# Compare against port 9210 (coordinator direct) to exclude the coordinator
+# proxy from the measurement. For bulk metadata plus tail latency, use
+# fanout100__tail25s__bulk50.yml.
+
+version: 1
+id: fanout100_tail25s
+name: Fan-out 100, tail 25s
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: serverless-logging
+      aliasCount: 100
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+    name: logs-degradation-default
+
+faults:
+  - id: slowest-region
+    target: remote-1
+    aliasPosition: 50
+    type: latency
+    latencyMs: 25000
+    jitterMs: 0

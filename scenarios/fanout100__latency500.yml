@@ -1,0 +1,39 @@
+# INFRA: 100 CCS aliases, 500ms (+200ms jitter) latency on every remote.
+#
+# Cross-cluster fan-out is parallel, so uniform latency does not accumulate
+# across aliases: the cost is the breadth of the fan-out (_field_caps, index
+# resolution, source enumeration), not latency times alias count.
+#
+# USE CASES (pick any):
+#   - ES|QL source autocomplete across many remotes
+#   - Broad wildcard index resolution
+#   - Comparing coordinator-only vs cross-cluster metadata requests
+#
+# For tail latency on one alias instead, use fanout100__tail25s.yml or
+# fanout100__tail25s__bulk50.yml.
+
+version: 1
+id: fanout100_latency500
+name: Fan-out 100, 500ms latency
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: serverless-logging
+      aliasCount: 100
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+    name: logs-degradation-default
+  - target: coordinator
+    preset: minimal_logs
+    name: logs-degradation-default
+
+faults:
+  - id: remote-wan-latency
+    target: remote-1
+    type: latency
+    latencyMs: 500
+    jitterMs: 200

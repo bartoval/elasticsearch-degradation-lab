@@ -1,0 +1,39 @@
+# INFRA: 300ms latency on every coordinator request, 3s on cross-cluster.
+#
+# USE CASES (pick any):
+#   - Counting duplicate Elasticsearch or saved-object requests on navigation
+#   - Alerting rule forms, Synthetics settings, management screens
+#   - Separating coordinator-only traffic from CCS in the network waterfall
+#
+# Toxiproxy byte counters at http://127.0.0.1:8474/metrics confirm whether a
+# second visit avoided cross-cluster traffic.
+
+version: 1
+id: 1remote_coord300_remote3s
+name: 1 remote, coord 300ms / remote 3s
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: remote-1
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+    name: logs-degradation-default
+  - target: coordinator
+    preset: minimal_lookup
+    name: degradation-lookup
+
+faults:
+  - id: coordinator-request-cost
+    target: coordinator
+    type: latency
+    latencyMs: 300
+    jitterMs: 0
+  - id: remote-request-cost
+    target: remote-1
+    type: latency
+    latencyMs: 3000
+    jitterMs: 0

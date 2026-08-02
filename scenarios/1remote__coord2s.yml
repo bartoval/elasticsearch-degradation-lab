@@ -1,0 +1,38 @@
+# INFRA: 2s (+200ms jitter) coordinator latency, 500ms remote latency.
+#
+# USE CASES (pick any):
+#   - Observability alerting and metrics rule forms under slow Elasticsearch
+#   - /api/metrics/source and similar routes during rule creation
+#   - Infra screens that resolve data views or metrics sources on load
+#
+# Coordinator and CCS traffic remain distinguishable by latency magnitude.
+
+version: 1
+id: 1remote_coord2s
+name: 1 remote, coord 2s / remote 500ms
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: metrics-remote
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+    name: metrics-degradation-default
+  - target: coordinator
+    preset: minimal_logs
+    name: metrics-degradation-default
+
+faults:
+  - id: coordinator-metrics-lag
+    target: coordinator
+    type: latency
+    latencyMs: 2000
+    jitterMs: 200
+  - id: remote-metrics-lag
+    target: remote-1
+    type: latency
+    latencyMs: 500
+    jitterMs: 0

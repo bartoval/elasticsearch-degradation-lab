@@ -1,0 +1,43 @@
+# INFRA: 100 CCS aliases, alias #100 at 25s tail latency, 50 bulk data streams
+# on the remote (5000 remote source names), minimal local fixture on coordinator.
+#
+# USE CASES (pick any):
+#   - Large source lists with one slow region (overview-cluster shape)
+#   - /internal/esql/autocomplete/sources/all under tail latency
+#   - Memory and duration of metadata fan-out with broad wildcard patterns
+#   - Comparing a scoped local query vs a pattern that crosses every alias
+#
+# Alias prefix serverless-logging matches patterns like serverless-logging-*:logs-*.
+# The 25s tail fault deliberately creates the wait; this profile tests Kibana's
+# behavior under that wait, not the natural cost of source resolution. Use the
+# fanout resolve profiles to measure that cost without a network fault.
+# For the same tail latency without bulk metadata, use fanout100__tail25s.yml.
+
+version: 1
+id: fanout100_tail25s_bulk50
+name: Fan-out 100, tail 25s, bulk 50 streams
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: serverless-logging
+      aliasCount: 100
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: bulk_logs
+    name: logs-fanout
+    dataStreams: 50
+    fieldsPerStream: 1
+  - target: coordinator
+    preset: minimal_logs
+    name: logs-degradation-default
+
+faults:
+  - id: slowest-region
+    target: remote-1
+    aliasPosition: 100
+    type: latency
+    latencyMs: 25000
+    jitterMs: 0

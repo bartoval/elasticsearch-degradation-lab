@@ -1,0 +1,28 @@
+# INFRA: 400 CCS aliases and 2000 remote data streams, with no network fault.
+# Each stream has one custom field so source resolution grows without also making
+# field capabilities the dominant workload.
+#
+# USE CASES:
+#   - Final point in the 100/200/400 alias source-resolution sweep
+#   - Reproducing a naturally expensive /internal/esql/autocomplete/sources/all
+#   - Testing editor loading and cancellation without artificial network latency
+
+version: 1
+id: fanout400_resolve2000
+name: Fan-out 400, resolve 2000 streams
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: serverless-logging
+      aliasCount: 400
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: bulk_logs
+    name: logs-resolution
+    dataStreams: 2000
+    fieldsPerStream: 1
+
+faults: []

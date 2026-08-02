@@ -1,0 +1,22 @@
+# INFRA: coordinator only, 200 data streams x 900 fields, no network fault.
+#
+# USE CASES (pick any):
+#   - Client-side field search and filtering at extreme cardinality (~180k names)
+#   - Unified search suggestions, ES|QL editor field lists, data view management
+#   - Rule condition builders that load the full field list
+#
+# Degradation is metadata size and Kibana processing, not network latency.
+
+version: 1
+id: local_fields200x900
+name: Local 200 streams x 900 fields
+
+topology:
+  remotes: []
+
+fixtures:
+  - target: coordinator
+    preset: bulk_logs
+    name: logs-local
+    dataStreams: 200
+    fieldsPerStream: 900

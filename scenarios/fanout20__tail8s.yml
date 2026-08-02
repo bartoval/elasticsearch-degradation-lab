@@ -1,0 +1,33 @@
+# INFRA: 20 CCS aliases, alias #20 at 8s tail latency, minimal logs fixtures.
+#
+# USE CASES (pick any):
+#   - Dev Tools Console ES|QL source autocomplete with CCS fan-out
+#   - _resolve/index or _field_caps when one remote is much slower than the rest
+#   - CCS topology smoke tests for FTR/Scout migrations
+
+version: 1
+id: fanout20_tail8s
+name: Fan-out 20, tail 8s
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: logging
+      aliasCount: 20
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+    name: logs-degradation-default
+  - target: coordinator
+    preset: minimal_logs
+    name: logs-degradation-default
+
+faults:
+  - id: slow-autocomplete-alias
+    target: remote-1
+    aliasPosition: 20
+    type: latency
+    latencyMs: 8000
+    jitterMs: 0

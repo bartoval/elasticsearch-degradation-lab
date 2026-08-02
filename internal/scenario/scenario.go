@@ -16,7 +16,7 @@ const (
 	// proxy inside the port range the runner reserves for them. The runner
 	// allocates one port per alias starting at its base proxy port, so raising
 	// this constant requires widening that range as well.
-	MaxRemoteAliases = 100
+	MaxRemoteAliases = 400
 )
 
 // FixturePreset limits YAML values to data setups implemented by the runner.
@@ -87,8 +87,9 @@ func (remote Remote) Aliases() []string {
 //
 // DataStreams and FieldsPerStream apply to the bulk_logs preset only. The first
 // sets what index resolution has to return, the second what field capabilities do.
-// Neither grows with the alias count, so a scenario wanting more metadata raises
-// these rather than aliasCount; the scenario files say by how much.
+// DataStreams grows both index resolution and field capabilities. AliasCount also
+// grows cross-cluster index resolution because every result is qualified by its
+// cluster alias, while FieldsPerStream grows only the field-capabilities result.
 type Fixture struct {
 	Target          string        `yaml:"target"`
 	Preset          FixturePreset `yaml:"preset"`
@@ -154,8 +155,8 @@ func (scenarioConfig Scenario) Validate() error {
 // validateRemotes checks the topology and returns the target names a fixture or a
 // fault is then allowed to refer to.
 func validateRemotes(remotes []Remote) (map[string]bool, error) {
-	if len(remotes) != 1 {
-		return nil, fmt.Errorf("topology.remotes must contain exactly one remote")
+	if len(remotes) > 1 {
+		return nil, fmt.Errorf("topology.remotes cannot contain more than one physical remote")
 	}
 
 	targets := map[string]bool{

@@ -12,20 +12,20 @@ You need native Linux or macOS and a bootstrapped Kibana checkout. The runner us
 Start the runner in one terminal:
 
 ```bash
-./kibana-degradation-runner up scenarios/ccs_overview_fanout.yml
+./kibana-degradation-runner up scenarios/fanout100__latency500.yml
 ```
 
 If Kibana is elsewhere, provide its directory:
 
 ```bash
-./kibana-degradation-runner up scenarios/ccs_slow_remote.yml \
+./kibana-degradation-runner up scenarios/1remote__slow25s.yml \
   --kibana-dir /path/to/kibana
 ```
 
 Alternatively, run it from source with Go 1.26 or newer:
 
 ```bash
-go run ./cmd/kibana-degradation-runner up scenarios/ccs_overview_fanout.yml
+go run ./cmd/kibana-degradation-runner up scenarios/fanout100__latency500.yml
 ```
 
 Start Kibana separately, either before or after the runner, using your normal
@@ -57,7 +57,7 @@ proxy by accident.
 | 9200 | proxy in front of the coordinator, which is what Kibana connects to |
 | 9210 | the coordinator itself |
 | 9201 | the remote |
-| 9401-9500 | one proxy per CCS alias |
+| 9401-9800 | one proxy per CCS alias |
 | 8474 | the Toxiproxy API, with per-proxy byte counters at `/metrics` |
 
 The two doors differ only in whether the coordinator's own proxy is crossed. A fault
@@ -67,7 +67,7 @@ way:
 ```text
                   ┌─ 9200, through the coordinator proxy ─┐
   you / Kibana ───┤                                        ├─► coordinator ─► alias proxies ─► remote
-                  └─ 9210, straight to the coordinator ────┘                   9401-9500
+                  └─ 9210, straight to the coordinator ────┘                   9401-9800
                                                                         remote faults apply here
 ```
 
@@ -78,9 +78,9 @@ then the cost that fault adds to every request Kibana makes.
 
 ## Compare broad and narrow queries
 
-The overview scenario creates 100 logical CCS aliases backed by one physical remote
-and gives one alias high tail latency. Compare the broad source pattern from the
-overview cluster:
+The tail-latency overview profile creates 100 logical CCS aliases backed by one
+physical remote and gives one alias high tail latency. Compare its broad source
+pattern:
 
 ```esql
 FROM logs-*-*,logs-*,filebeat-*,serverless-logging-*:logs-* | LIMIT 10
@@ -103,7 +103,7 @@ Elasticsearch and Toxiproxy logs are stored under
 
 A scenario contains:
 
-- `topology`: one physical remote with one or more logical CCS aliases.
+- `topology`: zero or one physical remote with one or more logical CCS aliases.
 - `fixtures`: zero or more test-data presets.
 - `faults`: zero or more network degradations.
 
@@ -119,9 +119,9 @@ topology:
 ```
 
 The coordinator then sees 100 remote clusters, each reached through its own
-Toxiproxy proxy on ports 9401-9500, while only two Elasticsearch processes run
+Toxiproxy proxy on ports 9401-9800, while only two Elasticsearch processes run
 locally. A fault targeting the remote applies to every one of its proxies. The
-limit of 100 aliases comes from that reserved port range.
+limit of 400 aliases comes from that reserved port range.
 
 Because cross-cluster requests fan out in parallel, a uniform latency does not
 accumulate across aliases: it costs roughly one slow round trip, not one per
@@ -154,21 +154,27 @@ large a field list Kibana has to hold; the names are distinct per data stream be
 single small response no matter how many existed. No documents are indexed, since
 both endpoints read mappings only.
 
-- [`ccs_slow_remote.yml`](scenarios/ccs_slow_remote.yml) adds 25 seconds of remote
-  latency for testing loading and cancellation behavior.
-- [`ccs_overview_fanout.yml`](scenarios/ccs_overview_fanout.yml) reproduces a broad
-  query across 100 CCS aliases.
-- [`overview_cluster.yml`](scenarios/overview_cluster.yml) reproduces a deployment
-  connected to many remotes with one slow tail, including the Kibana settings that
-  make Discover choose the broad default query.
-- [`discover_reload_cost.yml`](scenarios/discover_reload_cost.yml) puts a small delay
-  on every request Kibana makes, so that what Discover re-requests on each navigation
-  becomes visible and countable.
+Scenario file names describe the **infrastructure** (topology, fault, fixtures),
+not a single Kibana screen. One profile often supports many workflows — see the
+full catalog in [`scenarios/README.md`](scenarios/README.md).
+
+Examples:
+
+- [`1remote__slow25s.yml`](scenarios/1remote__slow25s.yml) — one remote at 25s
+  latency; starting point for new profiles.
+- [`fanout100__latency500.yml`](scenarios/fanout100__latency500.yml) — 100 CCS
+  aliases with uniform wide-area latency.
+- [`fanout100__tail25s__bulk50.yml`](scenarios/fanout100__tail25s__bulk50.yml) —
+  100 aliases, heavy metadata, one slow tail region.
+- [`fanout400__resolve2000.yml`](scenarios/fanout400__resolve2000.yml) — 400
+  aliases and 2000 streams for source resolution without a network fault.
+- [`1remote__coord300_remote3s.yml`](scenarios/1remote__coord300_remote3s.yml) —
+  small coordinator delay plus larger CCS delay; makes duplicate requests visible.
 
 Validate it without starting any processes:
 
 ```bash
-./kibana-degradation-runner validate scenarios/ccs_overview_fanout.yml
+./kibana-degradation-runner validate scenarios/fanout100__latency500.yml
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for implementation details and development

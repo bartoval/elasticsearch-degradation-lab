@@ -120,29 +120,38 @@ func (environment *Environment) build(
 	options Options,
 	sessionDirectory string,
 ) error {
-	remote := options.Scenario.Topology.Remotes[0]
-	aliasBindings := remoteAliasBindings(remote)
+	hasRemote := len(options.Scenario.Topology.Remotes) == 1
+	var remote scenario.Remote
+	var aliasBindings []elasticsearch.RemoteAliasBinding
+
+	if hasRemote {
+		remote = options.Scenario.Topology.Remotes[0]
+		aliasBindings = remoteAliasBindings(remote)
+	}
 
 	if proxyError := createProxies(ctx, aliasBindings, options.ReportProgress); proxyError != nil {
 		return proxyError
 	}
 
-	remoteNode, remoteError := startElasticsearch(
-		ctx,
-		options.KibanaDirectory,
-		sessionDirectory,
-		"remote",
-		elasticsearch.Options{
-			ID:            remote.ID,
-			HTTPPort:      remoteHTTPPort,
-			TransportPort: remoteTransportPort,
-		},
-		options.ReportProgress,
-	)
-	if remoteError != nil {
-		return remoteError
+	if hasRemote {
+		remoteNode, remoteError := startElasticsearch(
+			ctx,
+			options.KibanaDirectory,
+			sessionDirectory,
+			"remote",
+			elasticsearch.Options{
+				ID:            remote.ID,
+				HTTPPort:      remoteHTTPPort,
+				TransportPort: remoteTransportPort,
+			},
+			options.ReportProgress,
+		)
+		if remoteError != nil {
+			return remoteError
+		}
+
+		environment.remoteNode = remoteNode
 	}
-	environment.remoteNode = remoteNode
 
 	coordinatorNode, coordinatorError := startElasticsearch(
 		ctx,
@@ -161,21 +170,23 @@ func (environment *Environment) build(
 	}
 	environment.coordinatorNode = coordinatorNode
 
-	connectionError := connectRemoteAliases(
-		ctx,
-		coordinatorNode,
-		aliasBindings,
-		options.ReportProgress,
-	)
-	if connectionError != nil {
-		return connectionError
+	if hasRemote {
+		connectionError := connectRemoteAliases(
+			ctx,
+			coordinatorNode,
+			aliasBindings,
+			options.ReportProgress,
+		)
+		if connectionError != nil {
+			return connectionError
+		}
 	}
 
 	fixtureError := applyFixtures(
 		ctx,
 		options.Scenario.Fixtures,
 		coordinatorNode,
-		remoteNode,
+		environment.remoteNode,
 		options.ReportProgress,
 	)
 	if fixtureError != nil {
@@ -185,8 +196,11 @@ func (environment *Environment) build(
 	// Faults come last, so that everything before them ran against a healthy
 	// topology and a failure there cannot be blamed on the degradation.
 	proxyNamesByTarget := map[string][]string{
-		remote.ID:                  bindingAliases(aliasBindings),
 		scenario.CoordinatorTarget: {scenario.CoordinatorTarget},
+	}
+
+	if hasRemote {
+		proxyNamesByTarget[remote.ID] = bindingAliases(aliasBindings)
 	}
 
 	return applyFaults(ctx, options.Scenario.Faults, proxyNamesByTarget, options.ReportProgress)
@@ -196,12 +210,17 @@ func (environment *Environment) build(
 // death is reported rather than ignored, because an environment missing one of its
 // processes can no longer represent the scenario it claims to.
 func (environment *Environment) Wait(ctx context.Context) error {
+	var remoteExited <-chan error
+	if environment.remoteNode != nil {
+		remoteExited = environment.remoteNode.Exited()
+	}
+
 	select {
 	case <-ctx.Done():
 		return nil
 	case processError := <-environment.toxiproxyServer.Exited():
 		return environment.unexpectedExit(ctx, "Toxiproxy", environment.toxiproxyLog, processError)
-	case processError := <-environment.remoteNode.Exited():
+	case processError := <-remoteExited:
 		return environment.unexpectedExit(
 			ctx,
 			"remote Elasticsearch",

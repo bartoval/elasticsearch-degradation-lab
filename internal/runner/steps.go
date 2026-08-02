@@ -93,6 +93,10 @@ func createProxies(
 		return fmt.Errorf("create coordinator proxy: %w", coordinatorError)
 	}
 
+	if len(bindings) == 0 {
+		return nil
+	}
+
 	reportProgress(
 		fmt.Sprintf(
 			"Creating %d transport proxies on ports %d-%d",
@@ -210,6 +214,10 @@ func applyFixtures(
 		targetNode := remoteNode
 		if fixture.Target == scenario.CoordinatorTarget {
 			targetNode = coordinatorNode
+		}
+
+		if targetNode == nil {
+			return fmt.Errorf("fixture target %q is not configured", fixture.Target)
 		}
 
 		reportProgress(fixtureDescription(fixture))

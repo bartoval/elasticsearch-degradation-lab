@@ -1,19 +1,23 @@
-# Example scenario that describes a slow CCS remote cluster.
-# It groups the required cluster topology, test data, and network degradations.
+# INFRA: one CCS remote, 25s latency on every cross-cluster request.
+#
+# USE CASES (pick any):
+#   - Cross-cluster query cancellation and loading behaviour
+#   - Reporting or CSV export over a slow remote
+#   - Agent Builder index-mapping tools on remote data streams
+#   - Smoke test for CCS FTR/Scout migrations
+#
 # Copy this file as a starting point when creating another scenario.
 
 version: 1
-id: ccs_slow_remote
-name: Slow CCS remote
+id: 1remote_slow25s
+name: 1 remote, 25s latency
 
-# Describes one physical remote and its single CCS alias.
 topology:
   remotes:
     - id: remote-1
       alias: remote-1
       skipUnavailable: true
 
-# Describes zero or more test-data fixtures, including their generated resource names.
 fixtures:
   - target: remote-1
     preset: minimal_logs
@@ -22,7 +26,6 @@ fixtures:
     preset: minimal_lookup
     name: degradation-lookup
 
-# Describes zero or more network degradations to apply after the clusters are ready.
 faults:
   - id: remote-1-latency
     target: remote-1

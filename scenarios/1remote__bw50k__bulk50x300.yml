@@ -1,0 +1,31 @@
+# INFRA: one remote, 50 data streams x 300 fields (bulk_logs), bandwidth cap 50 KB/s.
+#
+# USE CASES (pick any):
+#   - _field_caps and mapping-heavy operations over a narrow cross-cluster link
+#   - Field pickers in Lens, Maps, alerting forms, Agent Builder tools
+#   - Correlating duration with bytes transferred (Toxiproxy /metrics)
+#
+# Compare coordinator-only _field_caps against remote-1:logs-fanout-*.
+
+version: 1
+id: 1remote_bw50k_bulk50x300
+name: 1 remote, 50 KB/s, bulk 50x300
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: remote-1
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: bulk_logs
+    name: logs-fanout
+    dataStreams: 50
+    fieldsPerStream: 300
+
+faults:
+  - id: narrow-pipe
+    target: remote-1
+    type: bandwidth
+    rateKbps: 50

@@ -1,0 +1,39 @@
+# INFRA: 10 CCS aliases; aliases #3 and #7 at 15s latency, the rest healthy.
+# The slow aliases still respond successfully; this is not an unavailable-remote
+# or partial-results scenario.
+#
+# USE CASES (pick any):
+#   - A CCS topology where only a subset of aliases has high latency
+#   - Remote cluster health indicators with mixed response times
+#   - Index resolution across many remotes when only some are slow
+#   - Agent Builder or alerting flows that fan out to every alias
+
+version: 1
+id: fanout10_partial_slow15s
+name: Fan-out 10, partial 15s slow
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: region
+      aliasCount: 10
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: minimal_logs
+    name: logs-degradation-default
+
+faults:
+  - id: degraded-region-3
+    target: remote-1
+    aliasPosition: 3
+    type: latency
+    latencyMs: 15000
+    jitterMs: 0
+  - id: degraded-region-7
+    target: remote-1
+    aliasPosition: 7
+    type: latency
+    latencyMs: 15000
+    jitterMs: 0
