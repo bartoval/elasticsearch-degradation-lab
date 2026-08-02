@@ -7,15 +7,16 @@ import (
 )
 
 const (
-	supportedVersion  = 1
-	latencyFaultType  = "latency"
-	CoordinatorTarget = "coordinator"
+	supportedVersion   = 1
+	LatencyFaultType   = "latency"
+	BandwidthFaultType = "bandwidth"
+	CoordinatorTarget  = "coordinator"
 
 	// MaxRemoteAliases bounds aliasCount so every alias gets its own Toxiproxy
 	// proxy inside the port range the runner reserves for them. The runner
 	// allocates one port per alias starting at its base proxy port, so raising
 	// this constant requires widening that range as well.
-	MaxRemoteAliases = 100
+	MaxRemoteAliases = 400
 )
 
 // FixturePreset limits YAML values to data setups implemented by the runner.
@@ -87,8 +88,19 @@ func (remote Remote) Aliases() []string {
 // DataStreams and FieldsPerStream apply to the bulk_logs preset only. They drive
 // two different symptoms: the data stream count decides how much index resolution
 // costs, because _resolve/index returns every data stream and backing index, while
-// the field count decides how much _field_caps and Kibana's field list cost. A
-// scenario that registers many CCS aliases multiplies both by the alias count.
+// the field count decides how much _field_caps and Kibana's field list cost.
+//
+// Only the first of those grows with the alias count. _resolve/index namespaces its
+// entries per cluster, so aliases add up there. _field_caps does not: it merges its
+// field map by name, and since every alias resolves to the same physical remote they
+// all contribute the same names. Measured over 200 streams of 300 fields, the union
+// was 60019 fields at one alias and 60019 at a hundred, and the response grew only
+// from 7.8 MB to 9.0 MB across those same hundred.
+//
+// So aliasCount is not a lever on field capabilities at all; these two numbers are.
+// A deployment whose regions run different integrations has a union many times
+// larger than aliases of one remote can imitate, and reaching it means raising the
+// fixture, which costs heap on that remote.
 type Fixture struct {
 	Target          string        `yaml:"target"`
 	Preset          FixturePreset `yaml:"preset"`
@@ -98,12 +110,26 @@ type Fixture struct {
 }
 
 // Fault describes a network degradation applied to a scenario target.
+//
+// The two types answer different questions. A latency fault costs the same whatever
+// the response weighs, so it models a distant or busy remote but says nothing about
+// how much data the topology produces. A bandwidth fault costs in proportion to the
+// bytes, which ties the time a request takes to what the fixture built.
+//
+// Two things to know before reading a bandwidth number. It caps each connection
+// separately, so aliases transferring in parallel each pay their own transfer and
+// the coordinator waits for the slowest rather than for their sum. And the bytes it
+// charges for are the ones crossing the cross-cluster transport, which is binary and
+// may be compressed, not the ones in the response Elasticsearch finally assembles:
+// the two differ by enough that a rate cannot be derived from a response size.
+// Calibrate against the proxy's own byte counters instead.
 type Fault struct {
 	ID        string `yaml:"id"`
 	Target    string `yaml:"target"`
 	Type      string `yaml:"type"`
 	LatencyMS int    `yaml:"latencyMs"`
 	JitterMS  int    `yaml:"jitterMs"`
+	RateKBps  int    `yaml:"rateKbps"`
 }
 
 // Validate rejects scenarios that cannot be executed predictably by the current runner.
@@ -249,20 +275,43 @@ func (scenarioConfig Scenario) Validate() error {
 			)
 		}
 
-		if fault.Type != latencyFaultType {
+		switch fault.Type {
+		case LatencyFaultType:
+			if fault.LatencyMS <= 0 {
+				return fmt.Errorf("faults[%d].latencyMs must be greater than zero", faultIndex)
+			}
+
+			if fault.JitterMS < 0 {
+				return fmt.Errorf("faults[%d].jitterMs cannot be negative", faultIndex)
+			}
+
+			if fault.RateKBps != 0 {
+				return fmt.Errorf(
+					"faults[%d].rateKbps applies to type %q only",
+					faultIndex,
+					BandwidthFaultType,
+				)
+			}
+		case BandwidthFaultType:
+			if fault.RateKBps <= 0 {
+				return fmt.Errorf("faults[%d].rateKbps must be greater than zero", faultIndex)
+			}
+
+			if fault.LatencyMS != 0 || fault.JitterMS != 0 {
+				return fmt.Errorf(
+					"faults[%d].latencyMs and faults[%d].jitterMs apply to type %q only",
+					faultIndex,
+					faultIndex,
+					LatencyFaultType,
+				)
+			}
+		default:
 			return fmt.Errorf(
-				"faults[%d].type must be %q",
+				"faults[%d].type must be %q or %q",
 				faultIndex,
-				latencyFaultType,
+				LatencyFaultType,
+				BandwidthFaultType,
 			)
-		}
-
-		if fault.LatencyMS <= 0 {
-			return fmt.Errorf("faults[%d].latencyMs must be greater than zero", faultIndex)
-		}
-
-		if fault.JitterMS < 0 {
-			return fmt.Errorf("faults[%d].jitterMs cannot be negative", faultIndex)
 		}
 	}
 

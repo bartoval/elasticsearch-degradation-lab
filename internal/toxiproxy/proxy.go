@@ -37,6 +37,18 @@ type latencyAttributes struct {
 	Jitter  int `json:"jitter"`
 }
 
+type bandwidthDefinition struct {
+	Name       string              `json:"name"`
+	Type       string              `json:"type"`
+	Stream     string              `json:"stream"`
+	Toxicity   int                 `json:"toxicity"`
+	Attributes bandwidthAttributes `json:"attributes"`
+}
+
+type bandwidthAttributes struct {
+	Rate int `json:"rate"`
+}
+
 // CreateProxy places Toxiproxy between the coordinator and one remote transport port.
 func CreateProxy(
 	ctx context.Context,
@@ -76,6 +88,31 @@ func ApplyLatency(
 	proxyPath := proxiesPath + "/" + url.PathEscape(proxyName) + "/toxics"
 
 	return postJSON(ctx, proxyPath, definition, "apply Toxiproxy latency")
+}
+
+// ApplyBandwidth caps the rate at which a remote's responses reach the coordinator.
+// Unlike latency, which costs the same whatever the answer weighs, this makes the
+// delay proportional to the bytes, so the time a request takes measures how much
+// metadata the topology actually produced.
+func ApplyBandwidth(
+	ctx context.Context,
+	proxyName string,
+	faultName string,
+	rateKilobytesPerSecond int,
+) error {
+	definition := bandwidthDefinition{
+		Name:     faultName,
+		Type:     "bandwidth",
+		Stream:   "downstream",
+		Toxicity: 1,
+		Attributes: bandwidthAttributes{
+			Rate: rateKilobytesPerSecond,
+		},
+	}
+
+	proxyPath := proxiesPath + "/" + url.PathEscape(proxyName) + "/toxics"
+
+	return postJSON(ctx, proxyPath, definition, "apply Toxiproxy bandwidth")
 }
 
 // postJSON performs the small subset of the Toxiproxy API needed by the MVP.

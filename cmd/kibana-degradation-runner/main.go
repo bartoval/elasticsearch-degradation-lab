@@ -39,7 +39,7 @@ const (
 	remoteTransportPort      = 9301
 
 	// remoteProxyBasePort opens the range reserved for per-alias proxies: alias
-	// number N listens on remoteProxyBasePort+N-1. The range ends at 9500, which
+	// number N listens on remoteProxyBasePort+N-1. The range ends at 9800, which
 	// is what scenario.MaxRemoteAliases bounds aliasCount to.
 	remoteProxyBasePort = 9401
 )
@@ -574,7 +574,33 @@ func fixtureDescription(fixture scenario.Fixture) string {
 	)
 }
 
-// applyFaults activates the latency conditions after the healthy topology is ready.
+// applyFault turns one declared degradation into the matching Toxiproxy toxic.
+func applyFault(ctx context.Context, proxyName string, fault scenario.Fault) error {
+	switch fault.Type {
+	case scenario.BandwidthFaultType:
+		return toxiproxy.ApplyBandwidth(ctx, proxyName, fault.ID, fault.RateKBps)
+	default:
+		return toxiproxy.ApplyLatency(
+			ctx,
+			proxyName,
+			fault.ID,
+			fault.LatencyMS,
+			fault.JitterMS,
+		)
+	}
+}
+
+// faultDescription states a fault in the units the reader cares about, since the
+// two types cost in different ways: one per request, the other per byte.
+func faultDescription(fault scenario.Fault) string {
+	if fault.Type == scenario.BandwidthFaultType {
+		return fmt.Sprintf("%d KB/s", fault.RateKBps)
+	}
+
+	return fmt.Sprintf("%dms latency, %dms jitter", fault.LatencyMS, fault.JitterMS)
+}
+
+// applyFaults activates the declared degradations after the healthy topology is ready.
 func applyFaults(
 	ctx context.Context,
 	faults []scenario.Fault,
@@ -589,22 +615,16 @@ func applyFaults(
 
 		reportProgress(
 			fmt.Sprintf(
-				"Applying %dms latency fault %s to %s across %d proxies",
-				fault.LatencyMS,
+				"Applying fault %s (%s) to %s across %d proxies",
 				fault.ID,
+				faultDescription(fault),
 				fault.Target,
 				len(proxyNames),
 			),
 		)
 
 		for _, proxyName := range proxyNames {
-			faultError := toxiproxy.ApplyLatency(
-				ctx,
-				proxyName,
-				fault.ID,
-				fault.LatencyMS,
-				fault.JitterMS,
-			)
+			faultError := applyFault(ctx, proxyName, fault)
 			if faultError != nil {
 				return fmt.Errorf(
 					"apply fault %s to proxy %s: %w",

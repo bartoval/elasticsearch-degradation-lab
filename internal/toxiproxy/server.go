@@ -57,6 +57,11 @@ func Start(ctx context.Context, binaryPath string, logPath string) (*Server, err
 		binaryPath,
 		"-host="+localHost,
 		"-port="+apiPort,
+		// Per-proxy byte counters, which are what turns "the request looks faster"
+		// into "no bytes crossed", and what a bandwidth fault has to be calibrated
+		// against, since the bytes it charges for are the ones on the transport
+		// rather than the ones in the answer Elasticsearch finally assembles.
+		"-proxy-metrics",
 	)
 	command.Stdout = logFile
 	command.Stderr = logFile

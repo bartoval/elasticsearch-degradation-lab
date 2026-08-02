@@ -57,8 +57,8 @@ proxy by accident.
 | 9200 | proxy in front of the coordinator, which is what Kibana connects to |
 | 9210 | the coordinator itself |
 | 9201 | the remote |
-| 9401-9500 | one proxy per CCS alias |
-| 8474 | the Toxiproxy API, which reports bytes per proxy |
+| 9401-9800 | one proxy per CCS alias |
+| 8474 | the Toxiproxy API, with per-proxy byte counters at `/metrics` |
 
 The two doors differ only in whether the coordinator's own proxy is crossed. A fault
 on a remote sits *behind* the coordinator, so a cross-cluster request pays it either
@@ -67,7 +67,7 @@ way:
 ```text
                   ┌─ 9200, through the coordinator proxy ─┐
   you / Kibana ───┤                                        ├─► coordinator ─► alias proxies ─► remote
-                  └─ 9210, straight to the coordinator ────┘                   9401-9500
+                  └─ 9210, straight to the coordinator ────┘                   9401-9800
                                                                         remote faults apply here
 ```
 
@@ -119,9 +119,9 @@ topology:
 ```
 
 The coordinator then sees 100 remote clusters, each reached through its own
-Toxiproxy proxy on ports 9401-9500, while only two Elasticsearch processes run
-locally. A fault targeting the remote applies to every one of its proxies. The
-limit of 100 aliases comes from that reserved port range.
+Toxiproxy proxy. The runner reserves ports 9401-9800 for up to 400 aliases while
+only two Elasticsearch processes run locally. A fault targeting the remote
+applies to every one of its proxies.
 
 Because cross-cluster requests fan out in parallel, a uniform latency does not
 accumulate across aliases: it costs roughly one slow round trip, not one per
@@ -158,6 +158,10 @@ both endpoints read mappings only.
 - [`overview_cluster.yml`](scenarios/overview_cluster.yml) reproduces a deployment
   connected to many slow remotes, including the Kibana settings that make Discover
   choose the broad default query.
+- [`overview_sources_resolution.yml`](scenarios/overview_sources_resolution.yml)
+  isolates the natural cost of resolving a large number of CCS sources. It has no
+  network faults; change only `aliasCount` between 100, 200, and 400 to measure how
+  `/internal/esql/autocomplete/sources/all` scales.
 - [`discover_reload_cost.yml`](scenarios/discover_reload_cost.yml) puts a small delay
   on every request Kibana makes, so that what Discover re-requests on each navigation
   becomes visible and countable.

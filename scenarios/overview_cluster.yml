@@ -30,20 +30,21 @@
 # remain, because that route resolves ['*', '*:*'] unconditionally and reads no
 # advanced setting.
 #
-# The two knobs drive different halves of the symptom, and only one of them drives
-# response time:
+# Field capabilities are set by the fixture alone, NOT by the alias count. Measured
+# on this scenario, over 200 streams of 300 fields:
 #
-#   dataStreams x fieldsPerStream  is the size of the field union _field_caps
-#                                  returns, because every stream is mapped with
-#                                  its own field names. 200 x 300 = 60000 distinct
-#                                  fields, which is what Kibana has to hold. This
-#                                  is the half that shows up as browser memory.
-#   latencyMs                      is the response time. Measured here, raising
-#                                  dataStreams from 200 to 1000 moved the endpoint
-#                                  only from 0.40s to 0.86s, which the latency
-#                                  below dwarfs. Do not raise it hoping for time.
+#   1 alias    60019 fields   7.8 MB
+#   100 alias  60019 fields   9.0 MB
 #
-# Elasticsearch needs heap for those mappings; the runner already raises it.
+# _field_caps merges by field name, and every alias resolves to the same physical
+# remote, so a hundred of them contribute exactly the names one does. Even the bytes
+# barely move, because the weight is in the field definitions rather than in the
+# per-field index lists. Raising aliasCount will not make this heavier; raising
+# dataStreams x fieldsPerStream will, at the cost of heap on the remote.
+#
+# Index resolution is the opposite case: _resolve/index namespaces its entries per
+# cluster, so there the aliases really do add up. Keep the two apart when reading a
+# measurement, since one endpoint answers to the alias count and the other does not.
 
 version: 1
 id: overview_cluster
@@ -71,18 +72,40 @@ fixtures:
     preset: minimal_logs
     name: logs-degradation-default
 
-# The latency models the remote's TOTAL RESPONSE TIME, not the network round trip.
-# What the coordinator waits for is however long a loaded production cluster takes
-# to resolve logs-* across its own thousands of indices while serving live traffic,
-# and Kibana cannot tell a slow network from a slow server. Measured on this setup,
-# fan-out is parallel and costs max() rather than the sum, so a hundred slow remotes
-# cost the same as one slow remote: this single number is the whole symptom.
+# Two faults, because they answer different questions and only one of them is
+# tied to what the fixture builds.
 #
-# The wide jitter stands in for a deployment spread over many regions, where the
-# slowest of a hundred draws is what the coordinator actually waits for.
+# A latency fault costs the same whether the answer is one field or sixty thousand,
+# so a large latency produces a large number that says nothing about the topology:
+# raise fieldsPerStream and it does not move. It belongs here only as the round trip
+# to a distant region, which is genuinely independent of size.
+#
+# A bandwidth fault costs in proportion to the bytes. Since the bytes are what the
+# fixture produces, the time a request takes becomes a measurement of it. That is
+# the number worth reporting.
+#
+# Both are diluted the same way by parallelism: cross-cluster fan-out is concurrent,
+# so the coordinator waits for the slowest alias rather than the sum of all of them.
+# What separates the two is the derivative, not the magnitude.
 faults:
-  - id: loaded-remote-response-time
+  # Round trip to a distant region. This costs the same whatever the answer
+  # weighs, so it is kept small: it is not what this scenario is about.
+  - id: region-round-trip
     target: remote-1
     type: latency
-    latencyMs: 10000
-    jitterMs: 5000
+    latencyMs: 150
+    jitterMs: 100
+  # Throughput of that same link, which is what makes the answer's SIZE cost
+  # something, and so ties the measurement to the fixture rather than to a chosen
+  # constant.
+  #
+  # NOT YET CALIBRATED. This rate charges for bytes on the cross-cluster transport,
+  # which is binary and may be compressed, while the number you see is the JSON the
+  # coordinator assembles: 7.8 MB of answer took 65s here, which 50 KB/s explains
+  # only if roughly 3 MB actually crossed the wire. Read the byte counters at
+  # http://127.0.0.1:8474/metrics before and after a request and divide by the rate
+  # before quoting any timing from this scenario.
+  - id: region-throughput
+    target: remote-1
+    type: bandwidth
+    rateKbps: 50
