@@ -57,7 +57,7 @@ proxy by accident.
 | 9200 | proxy in front of the coordinator, which is what Kibana connects to |
 | 9210 | the coordinator itself |
 | 9201 | the remote |
-| 9401-9800 | one proxy per CCS alias |
+| 9401-9500 | one proxy per CCS alias |
 | 8474 | the Toxiproxy API, with per-proxy byte counters at `/metrics` |
 
 The two doors differ only in whether the coordinator's own proxy is crossed. A fault
@@ -67,7 +67,7 @@ way:
 ```text
                   ┌─ 9200, through the coordinator proxy ─┐
   you / Kibana ───┤                                        ├─► coordinator ─► alias proxies ─► remote
-                  └─ 9210, straight to the coordinator ────┘                   9401-9800
+                  └─ 9210, straight to the coordinator ────┘                   9401-9500
                                                                         remote faults apply here
 ```
 
@@ -79,8 +79,8 @@ then the cost that fault adds to every request Kibana makes.
 ## Compare broad and narrow queries
 
 The overview scenario creates 100 logical CCS aliases backed by one physical remote
-and adds wide-area latency to CCS traffic. Compare the broad source pattern from
-the overview cluster:
+and gives one alias high tail latency. Compare the broad source pattern from the
+overview cluster:
 
 ```esql
 FROM logs-*-*,logs-*,filebeat-*,serverless-logging-*:logs-* | LIMIT 10
@@ -119,9 +119,9 @@ topology:
 ```
 
 The coordinator then sees 100 remote clusters, each reached through its own
-Toxiproxy proxy. The runner reserves ports 9401-9800 for up to 400 aliases while
-only two Elasticsearch processes run locally. A fault targeting the remote
-applies to every one of its proxies.
+Toxiproxy proxy on ports 9401-9500, while only two Elasticsearch processes run
+locally. A fault targeting the remote applies to every one of its proxies. The
+limit of 100 aliases comes from that reserved port range.
 
 Because cross-cluster requests fan out in parallel, a uniform latency does not
 accumulate across aliases: it costs roughly one slow round trip, not one per
@@ -131,6 +131,9 @@ alias. These scenarios reproduce the breadth of the fan-out, which is what makes
 A fault targets either a remote or `coordinator`. Targeting the coordinator degrades
 what Kibana asks Elasticsearch directly, saved objects included, which is how the
 cost of a page load can be told apart from the cost of crossing to the remotes.
+By default a remote fault applies to all of its aliases. Set `aliasPosition` to a
+1-based position to degrade only one alias, which models the tail latency of one
+slow region without slowing the rest of the topology.
 
 The `bulk_logs` preset creates many logs data streams, each with its own field names,
 for scenarios where the metadata is the expensive part:
@@ -156,12 +159,8 @@ both endpoints read mappings only.
 - [`ccs_overview_fanout.yml`](scenarios/ccs_overview_fanout.yml) reproduces a broad
   query across 100 CCS aliases.
 - [`overview_cluster.yml`](scenarios/overview_cluster.yml) reproduces a deployment
-  connected to many slow remotes, including the Kibana settings that make Discover
-  choose the broad default query.
-- [`overview_sources_resolution.yml`](scenarios/overview_sources_resolution.yml)
-  isolates the natural cost of resolving a large number of CCS sources. It has no
-  network faults; change only `aliasCount` between 100, 200, and 400 to measure how
-  `/internal/esql/autocomplete/sources/all` scales.
+  connected to many remotes with one slow tail, including the Kibana settings that
+  make Discover choose the broad default query.
 - [`discover_reload_cost.yml`](scenarios/discover_reload_cost.yml) puts a small delay
   on every request Kibana makes, so that what Discover re-requests on each navigation
   becomes visible and countable.

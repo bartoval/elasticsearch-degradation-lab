@@ -6,8 +6,8 @@
 # sequential round trips in one operation, not the latency times the alias count.
 # What this scenario exposes is therefore the breadth of the fan-out itself, which
 # is what makes _field_caps, index resolution, and the default ES|QL query costly.
-# Reproducing the tail latency of a real deployment, where a handful of regions are
-# far slower than the rest, needs per-alias-subset faults and is not supported yet.
+# Use overview_cluster.yml for tail latency, where one alias is much slower than the
+# other 99.
 #
 # Suggested Kibana comparison, in a space using the Observability solution view:
 #   observability:logSources  ->  logs-*,*:logs-*   (matches every generated alias)

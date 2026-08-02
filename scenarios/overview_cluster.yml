@@ -30,21 +30,11 @@
 # remain, because that route resolves ['*', '*:*'] unconditionally and reads no
 # advanced setting.
 #
-# Field capabilities are set by the fixture alone, NOT by the alias count. Measured
-# on this scenario, over 200 streams of 300 fields:
-#
-#   1 alias    60019 fields   7.8 MB
-#   100 alias  60019 fields   9.0 MB
-#
-# _field_caps merges by field name, and every alias resolves to the same physical
-# remote, so a hundred of them contribute exactly the names one does. Even the bytes
-# barely move, because the weight is in the field definitions rather than in the
-# per-field index lists. Raising aliasCount will not make this heavier; raising
-# dataStreams x fieldsPerStream will, at the cost of heap on the remote.
-#
-# Index resolution is the opposite case: _resolve/index namespaces its entries per
-# cluster, so there the aliases really do add up. Keep the two apart when reading a
-# measurement, since one endpoint answers to the alias count and the other does not.
+# The topology models tail latency rather than making every region uniformly slow:
+# 99 aliases remain healthy and one takes 25 seconds to respond. A CCS operation
+# waits for that slowest alias, while a coordinator-only query avoids it entirely.
+# The delay stays below Kibana's default 30-second Elasticsearch timeout so the
+# request completes and can be distinguished from a timeout error.
 
 version: 1
 id: overview_cluster
@@ -58,54 +48,26 @@ topology:
       skipUnavailable: true
 
 fixtures:
-  # 200 data streams behind 100 aliases resolve to roughly 40000 entries, since
-  # _resolve/index returns each data stream together with its backing index. That
-  # is enough for the source patterns to be realistic; it is not what makes the
-  # environment slow.
+  # Fifty streams behind 100 aliases produce 5000 remote source names. This stays
+  # below the Streams enrichment API's 10000-name limit, while still exercising a
+  # broad source list. One field keeps _field_caps small enough that the chosen
+  # tail latency remains the degradation being observed.
   - target: remote-1
     preset: bulk_logs
     name: logs-fanout
-    dataStreams: 200
-    fieldsPerStream: 300
+    dataStreams: 50
+    fieldsPerStream: 1
   # The local-only target for discover:defaultEsqlQuery to point at.
   - target: coordinator
     preset: minimal_logs
     name: logs-degradation-default
 
-# Two faults, because they answer different questions and only one of them is
-# tied to what the fixture builds.
-#
-# A latency fault costs the same whether the answer is one field or sixty thousand,
-# so a large latency produces a large number that says nothing about the topology:
-# raise fieldsPerStream and it does not move. It belongs here only as the round trip
-# to a distant region, which is genuinely independent of size.
-#
-# A bandwidth fault costs in proportion to the bytes. Since the bytes are what the
-# fixture produces, the time a request takes becomes a measurement of it. That is
-# the number worth reporting.
-#
-# Both are diluted the same way by parallelism: cross-cluster fan-out is concurrent,
-# so the coordinator waits for the slowest alias rather than the sum of all of them.
-# What separates the two is the derivative, not the magnitude.
 faults:
-  # Round trip to a distant region. This costs the same whatever the answer
-  # weighs, so it is kept small: it is not what this scenario is about.
-  - id: region-round-trip
+  # Positions are 1-based. Only serverless-logging-100 receives this toxic; the
+  # other 99 aliases continue to respond normally.
+  - id: slowest-region
     target: remote-1
+    aliasPosition: 100
     type: latency
-    latencyMs: 150
-    jitterMs: 100
-  # Throughput of that same link, which is what makes the answer's SIZE cost
-  # something, and so ties the measurement to the fixture rather than to a chosen
-  # constant.
-  #
-  # NOT YET CALIBRATED. This rate charges for bytes on the cross-cluster transport,
-  # which is binary and may be compressed, while the number you see is the JSON the
-  # coordinator assembles: 7.8 MB of answer took 65s here, which 50 KB/s explains
-  # only if roughly 3 MB actually crossed the wire. Read the byte counters at
-  # http://127.0.0.1:8474/metrics before and after a request and divide by the rate
-  # before quoting any timing from this scenario.
-  - id: region-throughput
-    target: remote-1
-    type: bandwidth
-    rateKbps: 50
+    latencyMs: 25000
+    jitterMs: 0

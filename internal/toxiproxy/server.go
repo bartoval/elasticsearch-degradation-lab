@@ -2,16 +2,15 @@ package toxiproxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
+
+	"kibana-degradation-runner/internal/process"
 )
 
 const (
@@ -29,8 +28,7 @@ const APIURL = "http://" + apiAddress
 
 // Server owns the Toxiproxy child process and reports when that process exits.
 type Server struct {
-	cancelProcess context.CancelFunc
-	done          chan error
+	child *process.Child
 }
 
 // Start launches Toxiproxy with its API bound only to the local machine.
@@ -51,48 +49,25 @@ func Start(ctx context.Context, binaryPath string, logPath string) (*Server, err
 	}
 	defer logFile.Close()
 
-	processContext, cancelProcess := context.WithCancel(ctx)
-	command := exec.CommandContext(
-		processContext,
-		binaryPath,
-		"-host="+localHost,
-		"-port="+apiPort,
-		// Per-proxy byte counters, which are what turns "the request looks faster"
-		// into "no bytes crossed", and what a bandwidth fault has to be calibrated
-		// against, since the bytes it charges for are the ones on the transport
-		// rather than the ones in the answer Elasticsearch finally assembles.
-		"-proxy-metrics",
-	)
-	command.Stdout = logFile
-	command.Stderr = logFile
-	command.WaitDelay = shutdownTimeout
-	command.Cancel = func() error {
-		signalError := command.Process.Signal(syscall.SIGTERM)
-		if errors.Is(signalError, os.ErrProcessDone) {
-			return nil
-		}
-
-		return signalError
-	}
-
-	startError := command.Start()
+	child, startError := process.Start(ctx, process.Spec{
+		Path: binaryPath,
+		Arguments: []string{
+			"-host=" + localHost,
+			"-port=" + apiPort,
+			// Per-proxy byte counters, which are what turns "the request looks
+			// faster" into "no bytes crossed", and what a bandwidth fault has to be
+			// calibrated against, since the bytes it charges for are the ones on the
+			// transport rather than the ones in the answer Elasticsearch assembles.
+			"-proxy-metrics",
+		},
+		Output:        logFile,
+		ShutdownGrace: shutdownTimeout,
+	})
 	if startError != nil {
-		cancelProcess()
-
 		return nil, fmt.Errorf("start Toxiproxy: %w", startError)
 	}
 
-	server := &Server{
-		cancelProcess: cancelProcess,
-		done:          make(chan error, 1),
-	}
-
-	go func() {
-		server.done <- command.Wait()
-		close(server.done)
-	}()
-
-	return server, nil
+	return &Server{child: child}, nil
 }
 
 // WaitUntilReady confirms that the child process accepts HTTP API requests.
@@ -109,7 +84,7 @@ func (server *Server) WaitUntilReady(ctx context.Context) error {
 		}
 
 		select {
-		case waitError := <-server.done:
+		case waitError := <-server.child.Exited():
 			if waitError != nil {
 				return fmt.Errorf("Toxiproxy exited before becoming ready: %w", waitError)
 			}
@@ -124,13 +99,12 @@ func (server *Server) WaitUntilReady(ctx context.Context) error {
 
 // Exited reports an unexpected Toxiproxy exit while the scenario is active.
 func (server *Server) Exited() <-chan error {
-	return server.done
+	return server.child.Exited()
 }
 
-// Stop cancels the child context and waits for the process to release its resources.
-func (server *Server) Stop() {
-	server.cancelProcess()
-	<-server.done
+// Stop asks Toxiproxy to exit and waits for it to release its port.
+func (server *Server) Stop() error {
+	return server.child.Stop()
 }
 
 // assertAPIAddressAvailable reports a stale Toxiproxy process before starting another one.

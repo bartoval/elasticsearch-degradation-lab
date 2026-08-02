@@ -16,7 +16,7 @@ const (
 	// proxy inside the port range the runner reserves for them. The runner
 	// allocates one port per alias starting at its base proxy port, so raising
 	// this constant requires widening that range as well.
-	MaxRemoteAliases = 400
+	MaxRemoteAliases = 100
 )
 
 // FixturePreset limits YAML values to data setups implemented by the runner.
@@ -85,22 +85,10 @@ func (remote Remote) Aliases() []string {
 
 // Fixture selects the data preset that will be created on a scenario target.
 //
-// DataStreams and FieldsPerStream apply to the bulk_logs preset only. They drive
-// two different symptoms: the data stream count decides how much index resolution
-// costs, because _resolve/index returns every data stream and backing index, while
-// the field count decides how much _field_caps and Kibana's field list cost.
-//
-// Only the first of those grows with the alias count. _resolve/index namespaces its
-// entries per cluster, so aliases add up there. _field_caps does not: it merges its
-// field map by name, and since every alias resolves to the same physical remote they
-// all contribute the same names. Measured over 200 streams of 300 fields, the union
-// was 60019 fields at one alias and 60019 at a hundred, and the response grew only
-// from 7.8 MB to 9.0 MB across those same hundred.
-//
-// So aliasCount is not a lever on field capabilities at all; these two numbers are.
-// A deployment whose regions run different integrations has a union many times
-// larger than aliases of one remote can imitate, and reaching it means raising the
-// fixture, which costs heap on that remote.
+// DataStreams and FieldsPerStream apply to the bulk_logs preset only. The first
+// sets what index resolution has to return, the second what field capabilities do.
+// Neither grows with the alias count, so a scenario wanting more metadata raises
+// these rather than aliasCount; the scenario files say by how much.
 type Fixture struct {
 	Target          string        `yaml:"target"`
 	Preset          FixturePreset `yaml:"preset"`
@@ -111,28 +99,27 @@ type Fixture struct {
 
 // Fault describes a network degradation applied to a scenario target.
 //
-// The two types answer different questions. A latency fault costs the same whatever
-// the response weighs, so it models a distant or busy remote but says nothing about
-// how much data the topology produces. A bandwidth fault costs in proportion to the
-// bytes, which ties the time a request takes to what the fixture built.
-//
-// Two things to know before reading a bandwidth number. It caps each connection
-// separately, so aliases transferring in parallel each pay their own transfer and
-// the coordinator waits for the slowest rather than for their sum. And the bytes it
-// charges for are the ones crossing the cross-cluster transport, which is binary and
-// may be compressed, not the ones in the response Elasticsearch finally assembles:
-// the two differ by enough that a rate cannot be derived from a response size.
-// Calibrate against the proxy's own byte counters instead.
+// The two types cost differently. Latency costs the same whatever the response
+// weighs, so it models a distant remote. Bandwidth costs in proportion to the bytes
+// crossing the proxy, which ties a measurement to what the fixture built, and is
+// capped per connection rather than across them. Those bytes are the ones on the
+// cross-cluster transport, not the ones in the response Elasticsearch assembles, so
+// a rate cannot be derived from a response size: calibrate against the byte counters
+// the proxy itself reports. AliasPosition is 1-based and selects one logical CCS
+// alias; zero leaves the fault on every proxy belonging to the target.
 type Fault struct {
-	ID        string `yaml:"id"`
-	Target    string `yaml:"target"`
-	Type      string `yaml:"type"`
-	LatencyMS int    `yaml:"latencyMs"`
-	JitterMS  int    `yaml:"jitterMs"`
-	RateKBps  int    `yaml:"rateKbps"`
+	ID            string `yaml:"id"`
+	Target        string `yaml:"target"`
+	AliasPosition int    `yaml:"aliasPosition"`
+	Type          string `yaml:"type"`
+	LatencyMS     int    `yaml:"latencyMs"`
+	JitterMS      int    `yaml:"jitterMs"`
+	RateKBps      int    `yaml:"rateKbps"`
 }
 
-// Validate rejects scenarios that cannot be executed predictably by the current runner.
+// Validate rejects scenarios that cannot be executed predictably by the current
+// runner. It stops at the first problem, since a scenario is written by hand and
+// one clear message is easier to act on than a list.
 func (scenarioConfig Scenario) Validate() error {
 	if scenarioConfig.Version != supportedVersion {
 		return fmt.Errorf("version must be %d", supportedVersion)
@@ -150,29 +137,46 @@ func (scenarioConfig Scenario) Validate() error {
 		return fmt.Errorf("name is required")
 	}
 
-	if len(scenarioConfig.Topology.Remotes) != 1 {
-		return fmt.Errorf("topology.remotes must contain exactly one remote")
+	// Every later section refers to a target by name, so the set of legal names has
+	// to be established before any of them can be checked.
+	targets, remoteError := validateRemotes(scenarioConfig.Topology.Remotes)
+	if remoteError != nil {
+		return remoteError
+	}
+
+	if fixtureError := validateFixtures(scenarioConfig.Fixtures, targets); fixtureError != nil {
+		return fixtureError
+	}
+
+	return validateFaults(scenarioConfig.Faults, scenarioConfig.Topology.Remotes, targets)
+}
+
+// validateRemotes checks the topology and returns the target names a fixture or a
+// fault is then allowed to refer to.
+func validateRemotes(remotes []Remote) (map[string]bool, error) {
+	if len(remotes) != 1 {
+		return nil, fmt.Errorf("topology.remotes must contain exactly one remote")
 	}
 
 	targets := map[string]bool{
 		CoordinatorTarget: true,
 	}
 
-	for remoteIndex, remote := range scenarioConfig.Topology.Remotes {
+	for remoteIndex, remote := range remotes {
 		if remote.ID == "" {
-			return fmt.Errorf("topology.remotes[%d].id is required", remoteIndex)
+			return nil, fmt.Errorf("topology.remotes[%d].id is required", remoteIndex)
 		}
 
 		if remote.Alias == "" {
-			return fmt.Errorf("topology.remotes[%d].alias is required", remoteIndex)
+			return nil, fmt.Errorf("topology.remotes[%d].alias is required", remoteIndex)
 		}
 
 		if remote.AliasCount < 0 {
-			return fmt.Errorf("topology.remotes[%d].aliasCount cannot be negative", remoteIndex)
+			return nil, fmt.Errorf("topology.remotes[%d].aliasCount cannot be negative", remoteIndex)
 		}
 
 		if remote.AliasCount > MaxRemoteAliases {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"topology.remotes[%d].aliasCount cannot exceed %d, one proxy port is reserved per alias",
 				remoteIndex,
 				MaxRemoteAliases,
@@ -180,11 +184,11 @@ func (scenarioConfig Scenario) Validate() error {
 		}
 
 		if !isSafeIdentifier(remote.ID) {
-			return fmt.Errorf("topology.remotes[%d].id cannot contain a path", remoteIndex)
+			return nil, fmt.Errorf("topology.remotes[%d].id cannot contain a path", remoteIndex)
 		}
 
 		if remote.ID == CoordinatorTarget {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"topology.remotes[%d].id cannot be %q",
 				remoteIndex,
 				CoordinatorTarget,
@@ -192,20 +196,26 @@ func (scenarioConfig Scenario) Validate() error {
 		}
 
 		if !isValidRemoteAlias(remote.Alias) {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"topology.remotes[%d].alias can contain only letters, numbers, hyphens, and underscores",
 				remoteIndex,
 			)
 		}
 
 		if targets[remote.ID] {
-			return fmt.Errorf("topology.remotes[%d].id %q is duplicated", remoteIndex, remote.ID)
+			return nil, fmt.Errorf("topology.remotes[%d].id %q is duplicated", remoteIndex, remote.ID)
 		}
 
 		targets[remote.ID] = true
 	}
 
-	for fixtureIndex, fixture := range scenarioConfig.Fixtures {
+	return targets, nil
+}
+
+// validateFixtures rejects data setups the runner cannot create, and knobs asked of
+// a preset that does not read them.
+func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
+	for fixtureIndex, fixture := range fixtures {
 		if !targets[fixture.Target] {
 			return fmt.Errorf(
 				"fixtures[%d].target %q does not match a configured target",
@@ -255,9 +265,21 @@ func (scenarioConfig Scenario) Validate() error {
 		}
 	}
 
-	faultIDs := make(map[string]bool, len(scenarioConfig.Faults))
+	return nil
+}
 
-	for faultIndex, fault := range scenarioConfig.Faults {
+// validateFaults rejects degradations that name an unknown target, or that mix the
+// settings of the two fault types, since a scenario that silently ignored half of
+// what it declared would be measured with confidence and be wrong.
+func validateFaults(faults []Fault, remotes []Remote, targets map[string]bool) error {
+	faultIDs := make(map[string]bool, len(faults))
+	aliasCountsByTarget := make(map[string]int, len(remotes))
+
+	for _, remote := range remotes {
+		aliasCountsByTarget[remote.ID] = len(remote.Aliases())
+	}
+
+	for faultIndex, fault := range faults {
 		if fault.ID == "" {
 			return fmt.Errorf("faults[%d].id is required", faultIndex)
 		}
@@ -273,6 +295,29 @@ func (scenarioConfig Scenario) Validate() error {
 				faultIndex,
 				fault.Target,
 			)
+		}
+
+		if fault.AliasPosition < 0 {
+			return fmt.Errorf("faults[%d].aliasPosition cannot be negative", faultIndex)
+		}
+
+		if fault.AliasPosition > 0 {
+			if fault.Target == CoordinatorTarget {
+				return fmt.Errorf(
+					"faults[%d].aliasPosition applies to remote targets only",
+					faultIndex,
+				)
+			}
+
+			aliasCount := aliasCountsByTarget[fault.Target]
+			if fault.AliasPosition > aliasCount {
+				return fmt.Errorf(
+					"faults[%d].aliasPosition cannot exceed the %d aliases configured for target %q",
+					faultIndex,
+					aliasCount,
+					fault.Target,
+				)
+			}
 		}
 
 		switch fault.Type {

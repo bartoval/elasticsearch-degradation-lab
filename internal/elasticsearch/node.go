@@ -2,7 +2,6 @@ package elasticsearch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,8 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
+
+	"kibana-degradation-runner/internal/process"
 )
 
 const (
@@ -59,8 +59,7 @@ type Node struct {
 	logPath       string
 	httpPort      int
 	transportPort int
-	cancelProcess context.CancelFunc
-	done          chan error
+	child         *process.Child
 }
 
 // Start launches Kibana's existing Elasticsearch snapshot tool.
@@ -109,57 +108,37 @@ func Start(
 	}
 	defer logFile.Close()
 
-	processContext, cancelProcess := context.WithCancel(ctx)
-	command := exec.CommandContext(
-		processContext,
-		nodePath,
-		snapshotArguments(
+	child, startError := process.Start(ctx, process.Spec{
+		Path: nodePath,
+		Arguments: snapshotArguments(
 			scriptPath,
 			nodeDirectory,
 			dataDirectory,
 			internalLogDirectory,
 			options,
-		)...,
-	)
-	command.Dir = kibanaDirectory
-	// A fan-out fixture holds tens of thousands of field mappings in cluster
-	// state, and _field_caps over them exhausts the small default heap.
-	command.Env = append(os.Environ(), "ES_JAVA_OPTS="+elasticsearchJavaOpts)
-	command.Stdout = logFile
-	command.Stderr = logFile
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.WaitDelay = shutdownTimeout
-	command.Cancel = func() error {
-		signalError := syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
-		if errors.Is(signalError, syscall.ESRCH) {
-			return nil
-		}
-
-		return signalError
-	}
-
-	if startError := command.Start(); startError != nil {
-		cancelProcess()
-
+		),
+		Directory: kibanaDirectory,
+		// A fan-out fixture holds tens of thousands of field mappings in cluster
+		// state, and _field_caps over them exhausts the small default heap.
+		Environment: append(os.Environ(), "ES_JAVA_OPTS="+elasticsearchJavaOpts),
+		Output:      logFile,
+		// Kibana's tool is a launcher: the Elasticsearch that matters runs below it,
+		// so signalling only the launcher would leave that one holding the ports.
+		ProcessGroup:  true,
+		ShutdownGrace: shutdownTimeout,
+	})
+	if startError != nil {
 		return nil, fmt.Errorf("start Elasticsearch %s: %w", options.ID, startError)
 	}
 
-	node := &Node{
+	return &Node{
 		id:            options.ID,
 		url:           "http://" + net.JoinHostPort(localHost, strconv.Itoa(options.HTTPPort)),
 		logPath:       logPath,
 		httpPort:      options.HTTPPort,
 		transportPort: options.TransportPort,
-		cancelProcess: cancelProcess,
-		done:          make(chan error, 1),
-	}
-
-	go func() {
-		node.done <- command.Wait()
-		close(node.done)
-	}()
-
-	return node, nil
+		child:         child,
+	}, nil
 }
 
 // WaitUntilReady reports the latest failure and launcher activity every ten seconds.
@@ -189,7 +168,7 @@ func (node *Node) WaitUntilReady(ctx context.Context, reportProgress func(string
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case processError := <-node.done:
+		case processError := <-node.child.Exited():
 			return fmt.Errorf(
 				"Elasticsearch %s exited before becoming ready: %v\nRecent log:\n%s\nFull log: %s",
 				node.id,
@@ -231,13 +210,16 @@ func (node *Node) LogPath() string {
 
 // Exited reports an unexpected launcher exit while the scenario is active.
 func (node *Node) Exited() <-chan error {
-	return node.done
+	return node.child.Exited()
 }
 
 // Stop terminates the launcher and waits until Elasticsearch releases its ports.
 func (node *Node) Stop() error {
-	node.cancelProcess()
-	<-node.done
+	// The exit status is discarded on purpose: a process that was asked to stop
+	// reports having been signalled, which is the outcome that was wanted. What can
+	// still go wrong is the JVM below the launcher outliving it, so the ports are
+	// what gets waited on.
+	_ = node.child.Stop()
 
 	return waitForPortsAvailable(node.httpPort, node.transportPort)
 }

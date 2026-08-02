@@ -98,7 +98,7 @@ func (node *Node) WaitForRemoteAliases(
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case processError := <-node.done:
+		case processError := <-node.child.Exited():
 			return fmt.Errorf(
 				"Elasticsearch %s exited while waiting for remote cluster aliases: %v",
 				node.id,
