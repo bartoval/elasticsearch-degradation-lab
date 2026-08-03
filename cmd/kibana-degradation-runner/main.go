@@ -41,10 +41,7 @@ func main() {
 // run validates the command-line shape before dispatching the requested operation.
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "missing command")
-		fmt.Fprintln(os.Stderr, usage)
-
-		return exitInvalidArguments
+		return reportInvalidArguments(errors.New("missing command"))
 	}
 
 	command := args[0]
@@ -54,43 +51,39 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stdout, usage)
 
 		return exitSuccess
-	case "validate", "up":
+	case "validate":
 		if len(args) < 2 {
-			fmt.Fprintf(os.Stderr, "missing scenario path for %s\n", command)
-			fmt.Fprintln(os.Stderr, usage)
-
-			return exitInvalidArguments
+			return reportInvalidArguments(fmt.Errorf("missing scenario path for %s", command))
 		}
 
-		scenarioPath := args[1]
-		options := args[2:]
-
-		if command == "validate" && len(options) > 0 {
-			fmt.Fprintf(os.Stderr, "unexpected arguments for %s\n", command)
-			fmt.Fprintln(os.Stderr, usage)
-
-			return exitInvalidArguments
+		if len(args) > 2 {
+			return reportInvalidArguments(fmt.Errorf("unexpected arguments for %s", command))
 		}
 
-		if command == "validate" {
-			return runValidateCommand(scenarioPath)
+		return runValidateCommand(args[1])
+	case "up":
+		if len(args) < 2 {
+			return reportInvalidArguments(fmt.Errorf("missing scenario path for %s", command))
 		}
 
-		kibanaDirectory, optionsError := parseUpOptions(options)
+		kibanaDirectory, optionsError := parseUpOptions(args[2:])
 		if optionsError != nil {
-			fmt.Fprintln(os.Stderr, optionsError)
-			fmt.Fprintln(os.Stderr, usage)
-
-			return exitInvalidArguments
+			return reportInvalidArguments(optionsError)
 		}
 
-		return runUpCommand(scenarioPath, kibanaDirectory)
+		return runUpCommand(args[1], kibanaDirectory)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n", command)
-		fmt.Fprintln(os.Stderr, usage)
-
-		return exitInvalidArguments
+		return reportInvalidArguments(fmt.Errorf("unknown command %q", command))
 	}
+}
+
+// reportInvalidArguments states the command-line problem next to the usage that
+// would have avoided it.
+func reportInvalidArguments(argumentError error) int {
+	fmt.Fprintln(os.Stderr, argumentError)
+	fmt.Fprintln(os.Stderr, usage)
+
+	return exitInvalidArguments
 }
 
 // parseUpOptions reads the optional Kibana checkout without adding a CLI dependency.
@@ -108,7 +101,7 @@ func parseUpOptions(arguments []string) (string, error) {
 	}
 
 	if len(arguments) > 2 {
-		return "", fmt.Errorf("unexpected arguments for up")
+		return "", errors.New("unexpected arguments for up")
 	}
 
 	return arguments[1], nil
@@ -200,7 +193,7 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 // announceReady tells the operator the environment is theirs to drive.
 func announceReady(scenarioName string) {
 	fmt.Fprintf(os.Stdout, "\nScenario %q infrastructure is ready.\n", scenarioName)
-	fmt.Fprintln(os.Stdout, "CCS is connected, fixtures are ready, and the scenario is active.")
+	fmt.Fprintln(os.Stdout, "Elasticsearch and fixtures are ready, and the scenario is active.")
 	fmt.Fprintln(os.Stdout, "\nStart Kibana separately using your normal development command.")
 	fmt.Fprintln(os.Stdout, "\nPress Ctrl+C here to stop the environment.")
 }

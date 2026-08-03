@@ -28,8 +28,20 @@ const (
 	progressInterval        = 10 * time.Second
 	readinessRequestTimeout = 2 * time.Second
 	setupRequestTimeout     = 30 * time.Second
-	shutdownTimeout         = 10 * time.Second
-	recentLogBytes          = 4 * 1024
+
+	// A stop is two waits in sequence, and they answer different questions:
+	// shutdownGrace bounds how long the launcher may take to exit once signalled,
+	// portReleaseTimeout how long the Elasticsearch below it may take to let go of
+	// the ports afterwards. Keeping them apart means neither one caps the other.
+	shutdownGrace       = 10 * time.Second
+	portReleaseTimeout  = 10 * time.Second
+	portReleaseInterval = 100 * time.Millisecond
+
+	recentLogBytes = 4 * 1024
+
+	// errorBodyLimitBytes keeps a failed response quotable without admitting an
+	// unexpected body into the error message whole.
+	errorBodyLimitBytes = 8 * 1024
 
 	// maxShardsPerNode has to cover the largest fan-out fixture the scenario
 	// package allows, since every generated data stream costs one shard.
@@ -125,7 +137,7 @@ func Start(
 		// Kibana's tool is a launcher: the Elasticsearch that matters runs below it,
 		// so signalling only the launcher would leave that one holding the ports.
 		ProcessGroup:  true,
-		ShutdownGrace: shutdownTimeout,
+		ShutdownGrace: shutdownGrace,
 	})
 	if startError != nil {
 		return nil, fmt.Errorf("start Elasticsearch %s: %w", options.ID, startError)
@@ -196,11 +208,6 @@ func (node *Node) WaitUntilReady(ctx context.Context, reportProgress func(string
 		case <-readinessTicker.C:
 		}
 	}
-}
-
-// URL returns the endpoint that Kibana should use for the coordinator.
-func (node *Node) URL() string {
-	return node.url
 }
 
 // LogPath points to the complete output from Kibana's ES tool.
@@ -336,10 +343,10 @@ func assertPortAvailable(port int) error {
 
 // waitForPortsAvailable prevents an immediate restart from racing Elasticsearch shutdown.
 func waitForPortsAvailable(ports ...int) error {
-	timeout := time.NewTimer(shutdownTimeout)
+	timeout := time.NewTimer(portReleaseTimeout)
 	defer timeout.Stop()
 
-	checkTicker := time.NewTicker(100 * time.Millisecond)
+	checkTicker := time.NewTicker(portReleaseInterval)
 	defer checkTicker.Stop()
 
 	var lastError error

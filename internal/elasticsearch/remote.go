@@ -196,7 +196,7 @@ func (node *Node) requestJSON(
 	requestFailed := response.StatusCode < http.StatusOK ||
 		response.StatusCode >= http.StatusMultipleChoices
 	if requestFailed {
-		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 8*1024))
+		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, errorBodyLimitBytes))
 
 		return fmt.Errorf("Elasticsearch returned %s: %s", response.Status, responseBody)
 	}

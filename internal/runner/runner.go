@@ -219,16 +219,16 @@ func (environment *Environment) Wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return nil
 	case processError := <-environment.toxiproxyServer.Exited():
-		return environment.unexpectedExit(ctx, "Toxiproxy", environment.toxiproxyLog, processError)
+		return unexpectedExit(ctx, "Toxiproxy", environment.toxiproxyLog, processError)
 	case processError := <-remoteExited:
-		return environment.unexpectedExit(
+		return unexpectedExit(
 			ctx,
 			"remote Elasticsearch",
 			environment.remoteNode.LogPath(),
 			processError,
 		)
 	case processError := <-environment.coordinatorNode.Exited():
-		return environment.unexpectedExit(
+		return unexpectedExit(
 			ctx,
 			"coordinator Elasticsearch",
 			environment.coordinatorNode.LogPath(),
@@ -239,7 +239,7 @@ func (environment *Environment) Wait(ctx context.Context) error {
 
 // unexpectedExit distinguishes a process that died on its own from one that exited
 // because the caller had already asked the environment to stop.
-func (environment *Environment) unexpectedExit(
+func unexpectedExit(
 	ctx context.Context,
 	component string,
 	logPath string,

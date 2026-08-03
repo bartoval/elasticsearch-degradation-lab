@@ -70,7 +70,7 @@ jobs:
             -o "${package_directory}/${BINARY_NAME}" \
             ./cmd/kibana-degradation-runner
 
-          cp LICENSE README.md "${package_directory}/"
+          cp CONTRIBUTING.md LICENSE README.md "${package_directory}/"
           cp -R scenarios "${package_directory}/"
           tar -C dist -czf "dist/${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}"
           sha256sum "dist/${ARTIFACT_NAME}.tar.gz" > "dist/${ARTIFACT_NAME}.tar.gz.sha256"

@@ -1,8 +1,8 @@
 # INFRA: 100 CCS aliases, 500ms (+200ms jitter) latency on every remote.
 #
 # Cross-cluster fan-out is parallel, so uniform latency does not accumulate
-# across aliases: the cost is the breadth of the fan-out (_field_caps, index
-# resolution, source enumeration), not latency times alias count.
+# across aliases: the added latency is paid in parallel, while cluster-qualified
+# index resolution and source enumeration still grow with the alias count.
 #
 # USE CASES (pick any):
 #   - ES|QL source autocomplete across many remotes

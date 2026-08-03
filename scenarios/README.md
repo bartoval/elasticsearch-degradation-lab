@@ -32,7 +32,12 @@ single underscores (used for `.runtime/<id>/`).
 | [`fanout100__tail25s__bulk50.yml`](fanout100__tail25s__bulk50.yml) | 100 aliases, tail + 50 bulk streams | Large source lists with one slow region, autocomplete under load              |
 | [`fanout100__resolve2000.yml`](fanout100__resolve2000.yml)         | 100 aliases, 2000 streams, no fault | Source-resolution sweep baseline                                              |
 | [`fanout200__resolve2000.yml`](fanout200__resolve2000.yml)         | 200 aliases, 2000 streams, no fault | Source-resolution sweep midpoint                                              |
-| [`fanout400__resolve2000.yml`](fanout400__resolve2000.yml)         | 400 aliases, 2000 streams, no fault | Natural `/sources/all` pressure without injected latency                      |
+| [`fanout400__resolve2000.yml`](fanout400__resolve2000.yml)         | 400 aliases, 2000 streams, no fault | Largest source-resolution sweep point                                         |
+
+The three `resolve2000` profiles form an experiment rather than three guaranteed
+latency levels. Start with 100 aliases and compare duration and response size before
+moving to 200 and 400. Each run recreates 2,000 data streams and can take several
+minutes.
 
 ## Quick start
 

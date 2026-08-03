@@ -5,7 +5,8 @@
 #   - Field pickers in Lens, Maps, alerting forms, Agent Builder tools
 #   - Correlating duration with bytes transferred (Toxiproxy /metrics)
 #
-# Compare coordinator-only _field_caps against remote-1:logs-fanout-*.
+# Compare _field_caps directly on the remote HTTP endpoint at 9201 with the same
+# request through CCS on the direct coordinator endpoint at 9210.
 
 version: 1
 id: 1remote_bw50k_bulk50x300

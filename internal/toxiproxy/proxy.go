@@ -15,6 +15,10 @@ import (
 const (
 	proxiesPath         = "/proxies"
 	proxyRequestTimeout = 5 * time.Second
+
+	// errorBodyLimitBytes keeps a failed response quotable without admitting an
+	// unexpected body into the error message whole.
+	errorBodyLimitBytes = 4 * 1024
 )
 
 type proxyDefinition struct {
@@ -145,7 +149,7 @@ func postJSON(ctx context.Context, path string, body any, operation string) erro
 	requestFailed := response.StatusCode < http.StatusOK ||
 		response.StatusCode >= http.StatusMultipleChoices
 	if requestFailed {
-		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 4*1024))
+		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, errorBodyLimitBytes))
 
 		return fmt.Errorf(
 			"%s: %s: %s",

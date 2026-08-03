@@ -30,7 +30,7 @@ func startToxiproxy(
 	}
 
 	if readinessError := server.WaitUntilReady(ctx); readinessError != nil {
-		server.Stop()
+		_ = server.Stop()
 
 		return nil, fmt.Errorf("start Toxiproxy: %w\nFull log: %s", readinessError, logPath)
 	}
@@ -273,9 +273,7 @@ func fixtureDescription(fixture scenario.Fixture) string {
 // applyFault turns one declared degradation into the matching Toxiproxy toxic.
 func applyFault(ctx context.Context, proxyName string, fault scenario.Fault) error {
 	switch fault.Type {
-	case scenario.BandwidthFaultType:
-		return toxiproxy.ApplyBandwidth(ctx, proxyName, fault.ID, fault.RateKBps)
-	default:
+	case scenario.LatencyFaultType:
 		return toxiproxy.ApplyLatency(
 			ctx,
 			proxyName,
@@ -283,6 +281,10 @@ func applyFault(ctx context.Context, proxyName string, fault scenario.Fault) err
 			fault.LatencyMS,
 			fault.JitterMS,
 		)
+	case scenario.BandwidthFaultType:
+		return toxiproxy.ApplyBandwidth(ctx, proxyName, fault.ID, fault.RateKBps)
+	default:
+		return fmt.Errorf("fault type %q is not supported", fault.Type)
 	}
 }
 

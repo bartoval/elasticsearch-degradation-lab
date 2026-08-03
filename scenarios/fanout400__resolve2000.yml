@@ -4,7 +4,8 @@
 #
 # USE CASES:
 #   - Final point in the 100/200/400 alias source-resolution sweep
-#   - Reproducing a naturally expensive /internal/esql/autocomplete/sources/all
+#   - Testing whether /internal/esql/autocomplete/sources/all becomes naturally
+#     expensive
 #   - Testing editor loading and cancellation without artificial network latency
 
 version: 1

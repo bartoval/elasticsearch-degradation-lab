@@ -1,5 +1,6 @@
 # INFRA: 100 CCS aliases, alias #100 at 25s tail latency, 50 bulk data streams
-# on the remote (5000 remote source names), minimal local fixture on coordinator.
+# on the remote (5000 cluster-qualified data streams plus roughly 5000 backing
+# indices), minimal local fixture on coordinator.
 #
 # USE CASES (pick any):
 #   - Large source lists with one slow region (overview-cluster shape)

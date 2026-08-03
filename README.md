@@ -6,8 +6,13 @@ topology, test data, and network faults.
 
 ## Try it
 
-You need native Linux or macOS and a bootstrapped Kibana checkout. The runner uses
-`../kibana` by default. Windows and WSL are not supported.
+You need native Linux or macOS and a bootstrapped Kibana checkout. Use the Node.js
+version pinned by Kibana in `.nvmrc`; the runner invokes that checkout's
+`scripts/es.js` with the `node` executable in your `PATH`. Windows and WSL are not
+supported.
+
+By default, the runner looks for Kibana at `../kibana`, relative to the directory
+where you run the command. Use `--kibana-dir` when the checkout is elsewhere.
 
 Start the runner in one terminal:
 
@@ -34,7 +39,7 @@ development command.
 Before reproducing the behavior, wait for:
 
 ```text
-Scenario "Overview CCS fan-out" infrastructure is ready.
+Scenario "<scenario name>" infrastructure is ready.
 ```
 
 When Kibana and the scenario are ready, open your local Kibana instance and reproduce
@@ -43,22 +48,29 @@ the behavior.
 Press `Ctrl+C` in the runner terminal to stop Elasticsearch and Toxiproxy. Stop Kibana
 separately.
 
-The first run requires internet access to download Toxiproxy.
+When they are not already cached, the runner downloads Toxiproxy and Kibana's
+matching Elasticsearch snapshot. Later runs reuse both caches.
 
 ### Ports
 
-Kibana needs no configuration, because the address it already expects is the one to
-use. That address is a proxy rather than Elasticsearch itself, so that every request
-Kibana makes can be observed and delayed, and so that none of them can bypass the
-proxy by accident.
+With Kibana's standard development configuration, no additional Elasticsearch
+setting is needed: Kibana already connects to `http://localhost:9200`. That address
+is a proxy rather than Elasticsearch itself, so every Elasticsearch request from
+Kibana can receive the faults declared by the scenario. A custom
+`elasticsearch.hosts` setting must still point to port 9200.
 
 | Port | What answers |
 | --- | --- |
 | 9200 | proxy in front of the coordinator, which is what Kibana connects to |
 | 9210 | the coordinator itself |
-| 9201 | the remote |
-| 9401-9800 | one proxy per CCS alias |
+| 9201 | remote HTTP endpoint, when the scenario has a remote |
+| 9300 | coordinator transport endpoint |
+| 9301 | remote transport endpoint, when configured |
+| 9401-9800 | one transport proxy per CCS alias |
 | 8474 | the Toxiproxy API, with per-proxy byte counters at `/metrics` |
+
+The applicable ports must be free before startup. A coordinator-only scenario uses
+9200, 9210, 9300, and 8474; scenarios with a remote also use the remaining ports.
 
 The two doors differ only in whether the coordinator's own proxy is crossed. A fault
 on a remote sits *behind* the coordinator, so a cross-cluster request pays it either
@@ -76,11 +88,17 @@ when the coordinator proxy is itself what you want to measure, which is the case
 only when a fault targets `coordinator`; the difference between the two ports is
 then the cost that fault adds to every request Kibana makes.
 
+Direct Elasticsearch requests require the development credentials:
+
+```bash
+curl -u elastic:changeme http://127.0.0.1:9210/_cluster/health
+```
+
 ## Compare broad and narrow queries
 
-The tail-latency overview profile creates 100 logical CCS aliases backed by one
-physical remote and gives one alias high tail latency. Compare its broad source
-pattern:
+The [`fanout100__tail25s__bulk50.yml`](scenarios/fanout100__tail25s__bulk50.yml)
+profile creates 100 logical CCS aliases backed by one physical remote and gives one
+alias high tail latency. Compare its broad source pattern:
 
 ```esql
 FROM logs-*-*,logs-*,filebeat-*,serverless-logging-*:logs-* | LIMIT 10
@@ -97,13 +115,15 @@ In Chrome DevTools, `/internal/esql/autocomplete/sources/all` can be observed
 separately because it may still enumerate remote sources for either query.
 
 Elasticsearch and Toxiproxy logs are stored under
-`.runtime/<scenario-id>/logs/`.
+`.runtime/<scenario-id>/logs/`, relative to the directory where the runner was
+started.
 
 ## Scenarios
 
 A scenario contains:
 
-- `topology`: zero or one physical remote with one or more logical CCS aliases.
+- `topology`: an optional physical remote; when present, it has one or more logical
+  CCS aliases.
 - `fixtures`: zero or more test-data presets.
 - `faults`: zero or more network degradations.
 
@@ -124,9 +144,10 @@ locally. A fault targeting the remote applies to every one of its proxies. The
 limit of 400 aliases comes from that reserved port range.
 
 Because cross-cluster requests fan out in parallel, a uniform latency does not
-accumulate across aliases: it costs roughly one slow round trip, not one per
-alias. These scenarios reproduce the breadth of the fan-out, which is what makes
-`_field_caps`, index resolution, and the default ES|QL query expensive.
+accumulate across aliases: it costs roughly one slow round trip, not one per alias.
+Alias count does, however, multiply cluster-qualified `_resolve/index` results.
+`_field_caps` response size instead grows primarily with the distinct field names
+created by the fixture.
 
 A fault targets either a remote or `coordinator`. Targeting the coordinator degrades
 what Kibana asks Elasticsearch directly, saved objects included, which is how the
@@ -147,12 +168,16 @@ fixtures:
     fieldsPerStream: 300
 ```
 
-`dataStreams` sets how much index resolution costs, since that is what
-`_resolve/index` returns. `fieldsPerStream` sets how much `_field_caps` costs and how
-large a field list Kibana has to hold; the names are distinct per data stream because
-`_field_caps` merges by name, so streams sharing one schema would collapse into a
-single small response no matter how many existed. No documents are indexed, since
-both endpoints read mappings only.
+`dataStreams` grows what `_resolve/index` returns for each alias, while `aliasCount`
+multiplies those cluster-qualified results. `fieldsPerStream` grows the
+`_field_caps` union and the field list Kibana has to hold. Field names are distinct
+per data stream because `_field_caps` merges by name; streams sharing one schema
+would collapse into a small response. No documents are indexed because both
+endpoints read mappings only.
+
+The `resolve2000` profiles create 2,000 data streams from a clean data directory on
+every run. Start with the 100-alias profile: fixture creation can take several
+minutes and the larger sweep points require substantial local memory.
 
 Scenario file names describe the **infrastructure** (topology, fault, fixtures),
 not a single Kibana screen. One profile often supports many workflows — see the
@@ -166,8 +191,8 @@ Examples:
   aliases with uniform wide-area latency.
 - [`fanout100__tail25s__bulk50.yml`](scenarios/fanout100__tail25s__bulk50.yml) —
   100 aliases, heavy metadata, one slow tail region.
-- [`fanout400__resolve2000.yml`](scenarios/fanout400__resolve2000.yml) — 400
-  aliases and 2000 streams for source resolution without a network fault.
+- [`fanout400__resolve2000.yml`](scenarios/fanout400__resolve2000.yml) — largest
+  source-resolution sweep point, without a network fault.
 - [`1remote__coord300_remote3s.yml`](scenarios/1remote__coord300_remote3s.yml) —
   small coordinator delay plus larger CCS delay; makes duplicate requests visible.
 
