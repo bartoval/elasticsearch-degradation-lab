@@ -42,6 +42,6 @@ minutes.
 ## Quick start
 
 ```bash
-./kibana-degradation-runner validate scenarios/1remote__slow25s.yml
-./kibana-degradation-runner up scenarios/1remote__slow25s.yml --kibana-dir /path/to/kibana
+./elasticsearch-degradation-lab validate scenarios/1remote__slow25s.yml
+./elasticsearch-degradation-lab up scenarios/1remote__slow25s.yml --kibana-dir /path/to/kibana
 ```

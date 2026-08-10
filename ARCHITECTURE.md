@@ -1,13 +1,14 @@
 # Architecture
 
-The Kibana degradation runner is a local orchestration tool for building controlled
-Elasticsearch failure conditions around a separately running Kibana development
-instance. A scenario describes the topology, test data, and network faults; the
-runner turns that description into local processes and proxy routes.
+The Elasticsearch degradation lab is a local orchestration tool for building
+controlled Elasticsearch failure conditions for client investigations. A scenario
+describes the topology, test data, and network faults; the runner turns that
+description into local processes and proxy routes.
 
-Kibana is outside the runner's lifecycle. The runner uses the Kibana checkout only
-to launch matching Elasticsearch snapshots through `scripts/es.js`; it does not
-start or modify Kibana itself.
+Kibana is the primary client but remains outside the runner's lifecycle. The runner
+uses the Kibana checkout only to launch matching Elasticsearch snapshots through
+`scripts/es.js`; it does not start or modify Kibana itself. Other clients can use
+the same local Elasticsearch endpoints.
 
 ## System overview
 

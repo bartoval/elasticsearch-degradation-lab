@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"kibana-degradation-runner/internal/process"
+	"github.com/bartoval/elasticsearch-degradation-lab/internal/process"
 )
 
 const (

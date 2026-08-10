@@ -31,8 +31,8 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     env:
-      ARTIFACT_NAME: kibana-degradation-runner-${{ matrix.goos }}-${{ matrix.goarch }}
-      BINARY_NAME: kibana-degradation-runner
+      ARTIFACT_NAME: elasticsearch-degradation-lab-${{ matrix.goos }}-${{ matrix.goarch }}
+      BINARY_NAME: elasticsearch-degradation-lab
     strategy:
       matrix:
         include:
@@ -68,7 +68,7 @@ jobs:
             -trimpath \
             -ldflags="-s -w" \
             -o "${package_directory}/${BINARY_NAME}" \
-            ./cmd/kibana-degradation-runner
+            ./cmd/elasticsearch-degradation-lab
 
           cp ARCHITECTURE.md CONTRIBUTING.md LICENSE README.md "${package_directory}/"
           cp -R scenarios "${package_directory}/"
@@ -97,7 +97,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v7
         with:
-          pattern: kibana-degradation-runner-*
+          pattern: elasticsearch-degradation-lab-*
           path: dist
           merge-multiple: true
 

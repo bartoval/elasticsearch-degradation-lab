@@ -9,14 +9,14 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"kibana-degradation-runner/internal/runner"
-	"kibana-degradation-runner/internal/scenario"
+	"github.com/bartoval/elasticsearch-degradation-lab/internal/runner"
+	"github.com/bartoval/elasticsearch-degradation-lab/internal/scenario"
 )
 
 const usage = `Usage:
-  kibana-degradation-runner validate <scenario.yml>
-  kibana-degradation-runner up <scenario.yml> [--kibana-dir <path>]
-  kibana-degradation-runner --help`
+  elasticsearch-degradation-lab validate <scenario.yml>
+  elasticsearch-degradation-lab up <scenario.yml> [--kibana-dir <path>]
+  elasticsearch-degradation-lab --help`
 
 const (
 	exitSuccess          = 0

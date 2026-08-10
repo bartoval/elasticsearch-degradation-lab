@@ -1,4 +1,4 @@
-module kibana-degradation-runner
+module github.com/bartoval/elasticsearch-degradation-lab
 
 go 1.26.0
 

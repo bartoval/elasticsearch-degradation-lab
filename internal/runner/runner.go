@@ -13,9 +13,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"kibana-degradation-runner/internal/elasticsearch"
-	"kibana-degradation-runner/internal/scenario"
-	"kibana-degradation-runner/internal/toxiproxy"
+	"github.com/bartoval/elasticsearch-degradation-lab/internal/elasticsearch"
+	"github.com/bartoval/elasticsearch-degradation-lab/internal/scenario"
+	"github.com/bartoval/elasticsearch-degradation-lab/internal/toxiproxy"
 )
 
 const (

@@ -1,8 +1,9 @@
-# kibana-degradation-runner
+# elasticsearch-degradation-lab
 
-Creates repeatable local environments for observing Kibana under degraded
-Elasticsearch and cross-cluster search conditions. A YAML scenario defines the
-topology, test data, and network faults.
+Creates repeatable local Elasticsearch environments with controlled network
+degradation and cross-cluster search topologies. Kibana is the primary use case,
+but the exposed Elasticsearch endpoints can also be exercised directly or by other
+clients. A YAML scenario defines the topology, test data, and network faults.
 
 ## Architecture
 
@@ -22,20 +23,20 @@ where you run the command. Use `--kibana-dir` when the checkout is elsewhere.
 Start the runner in one terminal:
 
 ```bash
-./kibana-degradation-runner up scenarios/fanout100__latency500.yml
+./elasticsearch-degradation-lab up scenarios/fanout100__latency500.yml
 ```
 
 If Kibana is elsewhere, provide its directory:
 
 ```bash
-./kibana-degradation-runner up scenarios/1remote__slow25s.yml \
+./elasticsearch-degradation-lab up scenarios/1remote__slow25s.yml \
   --kibana-dir /path/to/kibana
 ```
 
 Alternatively, run it from source with Go 1.26 or newer:
 
 ```bash
-go run ./cmd/kibana-degradation-runner up scenarios/fanout100__latency500.yml
+go run ./cmd/elasticsearch-degradation-lab up scenarios/fanout100__latency500.yml
 ```
 
 Start Kibana separately, either before or after the runner, using your normal
@@ -204,7 +205,7 @@ Examples:
 Validate it without starting any processes:
 
 ```bash
-./kibana-degradation-runner validate scenarios/fanout100__latency500.yml
+./elasticsearch-degradation-lab validate scenarios/fanout100__latency500.yml
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for implementation details and development

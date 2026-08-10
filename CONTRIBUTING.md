@@ -45,7 +45,7 @@ Run the formatting, static analysis, and build checks before submitting a change
 ```bash
 go fmt ./...
 go vet ./...
-go build ./cmd/kibana-degradation-runner
+go build ./cmd/elasticsearch-degradation-lab
 ```
 
 ## Release artifacts
