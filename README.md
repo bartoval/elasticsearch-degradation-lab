@@ -4,6 +4,11 @@ Creates repeatable local environments for observing Kibana under degraded
 Elasticsearch and cross-cluster search conditions. A YAML scenario defines the
 topology, test data, and network faults.
 
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a high-level view of the components and
+request flow.
+
 ## Try it
 
 You need native Linux or macOS and a bootstrapped Kibana checkout. Use the Node.js

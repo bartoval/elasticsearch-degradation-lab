@@ -52,7 +52,9 @@ go build ./cmd/kibana-degradation-runner
 
 The `Build artifacts` GitHub Actions workflow runs manually or when a `v*` tag is
 pushed. It produces archives and SHA-256 checksums for Linux and macOS on x64 and
-ARM64.
+ARM64. Manual runs keep their files as workflow-run artifacts. Tag runs also create
+a GitHub release for the tag and attach every archive and checksum to it.
 
-Each archive contains the executable, every scenario, `README.md`, `CONTRIBUTING.md`,
-and `LICENSE`. Windows and WSL artifacts are intentionally not produced.
+Each archive contains the executable, every scenario, `README.md`, `ARCHITECTURE.md`,
+`CONTRIBUTING.md`, and `LICENSE`. Windows and WSL artifacts are intentionally not
+produced.
