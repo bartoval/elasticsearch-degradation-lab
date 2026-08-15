@@ -20,24 +20,47 @@ supported.
 By default, the runner looks for Kibana at `../kibana`, relative to the directory
 where you run the command. Use `--kibana-dir` when the checkout is elsewhere.
 
-Start the runner in one terminal:
+Install it with Go 1.26 or newer:
 
 ```bash
-./elasticsearch-degradation-lab up scenarios/fanout100__latency500.yml
+go install github.com/bartoval/elasticsearch-degradation-lab/cmd/elasticsearch-degradation-lab@latest
+```
+
+This is the recommended way on macOS. A binary compiled locally never acquires the
+quarantine attribute, so Gatekeeper does not refuse to open it, which it does for
+anything downloaded and not notarized.
+
+Then start the runner in one terminal:
+
+```bash
+elasticsearch-degradation-lab up scenarios/fanout100__latency500.yml
 ```
 
 If Kibana is elsewhere, provide its directory:
 
 ```bash
-./elasticsearch-degradation-lab up scenarios/1remote__slow25s.yml \
+elasticsearch-degradation-lab up scenarios/1remote__slow25s.yml \
   --kibana-dir /path/to/kibana
 ```
 
-Alternatively, run it from source with Go 1.26 or newer:
+From a clone, without installing:
 
 ```bash
 go run ./cmd/elasticsearch-degradation-lab up scenarios/fanout100__latency500.yml
 ```
+
+### Using a release archive on macOS
+
+A downloaded build is not notarized, so macOS refuses it until the quarantine
+attribute is removed:
+
+```bash
+tar -xzf elasticsearch-degradation-lab-darwin-arm64.tar.gz
+xattr -dr com.apple.quarantine elasticsearch-degradation-lab-darwin-arm64
+```
+
+Extracting from a terminal rather than from Finder usually avoids the attribute in
+the first place.
 
 Start Kibana separately, either before or after the runner, using your normal
 development command.
@@ -103,7 +126,7 @@ curl -u elastic:changeme http://127.0.0.1:9210/_cluster/health
 ## Compare broad and narrow queries
 
 The [`fanout100__tail25s__bulk50.yml`](scenarios/fanout100__tail25s__bulk50.yml)
-profile creates 100 logical CCS aliases backed by one physical remote and gives one
+profile backs many logical CCS aliases with one physical remote and gives a single
 alias high tail latency. Compare its broad source pattern:
 
 ```esql
@@ -128,10 +151,29 @@ started.
 
 A scenario contains:
 
+- `elasticsearch`: optional tuning of the clusters the runner starts.
 - `topology`: an optional physical remote; when present, it has one or more logical
   CCS aliases.
 - `fixtures`: zero or more test-data presets.
 - `faults`: zero or more network degradations.
+
+The `elasticsearch` block raises limits for scenarios whose subject is a limit
+rather than a network condition, such as a result size the defaults refuse to
+return:
+
+```yaml
+elasticsearch:
+  heap: 8g
+  settings:
+    esql.query.result_truncation_max_size: "1000000"
+    indices.breaker.request.limit: "90%"
+```
+
+Both clusters receive the same tuning, so that a measurement never depends on which
+node answered. Settings are added to the ones the runner already passes and cannot
+replace them: names such as `http.port` or `path.data` describe where a node listens
+and writes, which the runner has to know to connect the topology and reset it, so a
+scenario that sets one is rejected rather than silently ignored.
 
 Setting `aliasCount` on the remote registers the same physical cluster under that
 many CCS aliases, numbered from the `alias` prefix:
@@ -144,10 +186,11 @@ topology:
       aliasCount: 100
 ```
 
-The coordinator then sees 100 remote clusters, each reached through its own
-Toxiproxy proxy on ports 9401-9800, while only two Elasticsearch processes run
-locally. A fault targeting the remote applies to every one of its proxies. The
-limit of 400 aliases comes from that reserved port range.
+The coordinator then sees that many remote clusters, each reached through its own
+Toxiproxy proxy, while only two Elasticsearch processes run locally. A fault
+targeting the remote applies to every one of its proxies. The upper bound on
+`aliasCount` is the size of the port range the runner reserves for those proxies;
+exceeding it is a validation error that names the limit.
 
 Because cross-cluster requests fan out in parallel, a uniform latency does not
 accumulate across aliases: it costs roughly one slow round trip, not one per alias.
@@ -181,28 +224,31 @@ per data stream because `_field_caps` merges by name; streams sharing one schema
 would collapse into a small response. No documents are indexed because both
 endpoints read mappings only.
 
-The `resolve2000` profiles create 2,000 data streams from a clean data directory on
-every run. Start with the 100-alias profile: fixture creation can take several
-minutes and the larger sweep points require substantial local memory.
+The `bulk_documents` preset is the opposite case: it indexes real documents into one
+index, for scenarios where a query has to return rows rather than resolve metadata.
 
-Scenario file names describe the **infrastructure** (topology, fault, fixtures),
-not a single Kibana screen. One profile often supports many workflows — see the
-full catalog in [`scenarios/README.md`](scenarios/README.md).
+```yaml
+fixtures:
+  - target: coordinator
+    preset: bulk_documents
+    name: logstash-degradation
+    documents: 500000
+```
 
-Examples:
+Each preset accepts only the sizing it reads. Asking `bulk_logs` for `documents`, or
+`bulk_documents` for `dataStreams`, is rejected, because a number that was declared
+and then ignored is worse than one that was refused.
 
-- [`1remote__slow25s.yml`](scenarios/1remote__slow25s.yml) — one remote at 25s
-  latency; starting point for new profiles.
-- [`fanout100__latency500.yml`](scenarios/fanout100__latency500.yml) — 100 CCS
-  aliases with uniform wide-area latency.
-- [`fanout100__tail25s__bulk50.yml`](scenarios/fanout100__tail25s__bulk50.yml) —
-  100 aliases, heavy metadata, one slow tail region.
-- [`fanout400__resolve2000.yml`](scenarios/fanout400__resolve2000.yml) — largest
-  source-resolution sweep point, without a network fault.
-- [`1remote__coord300_remote3s.yml`](scenarios/1remote__coord300_remote3s.yml) —
-  small coordinator delay plus larger CCS delay; makes duplicate requests visible.
+A large fixture is recreated from a clean data directory on every run, so its cost
+is paid at every start. Each scenario file states its own cost in the comment at the
+top.
 
-Validate it without starting any processes:
+Scenario file names describe the **infrastructure** — topology, fault, fixtures —
+rather than a single Kibana screen, because one profile usually serves several
+workflows. The catalog in [`scenarios/README.md`](scenarios/README.md) lists every
+profile with what it builds and what it is good for.
+
+Validate one without starting any processes:
 
 ```bash
 ./elasticsearch-degradation-lab validate scenarios/fanout100__latency500.yml

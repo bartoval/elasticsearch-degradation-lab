@@ -25,6 +25,7 @@ single underscores (used for `.runtime/<id>/`).
 | [`1remote__coord2s.yml`](1remote__coord2s.yml)                     | Coord 2s, remote 500ms              | Metrics/alerting rule forms, `/api/metrics/source` under load                 |
 | [`1remote__bw50k__bulk50x300.yml`](1remote__bw50k__bulk50x300.yml) | 50 KB/s link, bulk metadata         | `_field_caps` over narrow pipe, field pickers (Lens, Maps, rules)             |
 | [`local__fields200x900.yml`](local__fields200x900.yml)             | ~180k local fields, no fault        | Field search at extreme cardinality, unified search, ES\|QL editor            |
+| [`local__rows500k.yml`](local__rows500k.yml)                       | 500k documents, 8g heap, no fault   | 100k-row results in Discover, browser memory, circuit breakers                |
 | [`fanout20__tail8s.yml`](fanout20__tail8s.yml)                     | 20 aliases, #20 at 8s               | Console ES\|QL autocomplete, CCS smoke tests                                  |
 | [`fanout10__partial_slow15s.yml`](fanout10__partial_slow15s.yml)   | 10 aliases, #3 and #7 slow          | Mixed latency where only some aliases are slow                                |
 | [`fanout100__latency500.yml`](fanout100__latency500.yml)           | 100 aliases, 500ms all              | CCS fan-out breadth, source enumeration, index resolution                     |

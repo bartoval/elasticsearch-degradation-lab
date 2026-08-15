@@ -1,0 +1,59 @@
+# INFRA: coordinator only, 500k indexed documents of ~6.7 KB each, 8g heap, no fault.
+#
+# USE CASES (pick any):
+#   - Discover returning 100k rows from a single ES|QL query
+#   - Browser memory growth and tab crashes at large result sizes
+#   - Circuit-breaker behaviour under one large request
+#   - Choosing a client-side bytes-transferred limit from measured traffic
+#
+# Degradation is result weight, not network latency. Row count alone does not
+# reproduce the symptom: 500k narrow rows measured 40 MB and rendered without
+# trouble, so what a client has to hold is row weight times row count. The two are
+# separate knobs on purpose, because a query returning many cells and one returning
+# much text fail for different reasons. Use KEEP and DROP to vary the cells while
+# holding the rows, and compare.
+#
+# The sizes below are calibrated against a measurement rather than chosen. Two
+# thousand documents from Kibana's own makelogs generator returned 13.49 MB from
+# the ES|QL API, which is 6743 bytes over 86 columns per row; the same query against
+# this fixture returns 13.49 MB, within 0.02% of it. At that weight 500k rows are
+# about 3.1 GB, matching the tab size reported in the study this profile serves, and
+# a LIMIT of 100000 alone is roughly 640 MB.
+#
+# Changing either size changes that correspondence. Message bytes map one to one
+# onto the payload, while extra fields cost about 14 bytes per row rather than their
+# declared width, because an ES|QL response names its columns once and then carries
+# only values.
+#
+# TIME RANGE: timestamps walk one second backwards from the moment the fixture ran,
+# so this many documents reach about six days into the past and the newest is as old
+# as the session. A default range of minutes shows nothing; set the picker to seven
+# days for all of them, or twenty-four hours for roughly 86k.
+#
+# The heap and the two settings are what the defaults refuse: a 100k-row ES|QL
+# result is truncated and the request breaker trips long before the browser is
+# reached. Kibana reaches the coordinator through a proxy, so the byte counters at
+# http://127.0.0.1:8474/metrics measure how much crossed before the tab gave up.
+
+version: 1
+id: local_rows500k
+name: Local, 500k heavy documents, 100k-row results
+
+elasticsearch:
+  heap: 8g
+  settings:
+    esql.query.result_truncation_max_size: "1000000"
+    indices.breaker.request.limit: "90%"
+
+topology:
+  remotes: []
+
+fixtures:
+  - target: coordinator
+    preset: bulk_documents
+    name: logstash-degradation
+    documents: 500000
+    fieldsPerDocument: 86
+    messageBytes: 5370
+
+faults: []

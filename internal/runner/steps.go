@@ -229,6 +229,17 @@ func applyFixtures(
 			fixtureError = targetNode.ApplyMinimalLogs(ctx, fixture.Name)
 		case scenario.FixturePresetMinimalLookup:
 			fixtureError = targetNode.ApplyMinimalLookup(ctx, fixture.Name)
+		case scenario.FixturePresetBulkDocuments:
+			fixtureError = targetNode.ApplyBulkDocuments(
+				ctx,
+				fixture.Name,
+				elasticsearch.DocumentShape{
+					Count:             fixture.Documents,
+					FieldsPerDocument: fixture.FieldsPerDocument,
+					MessageBytes:      fixture.MessageBytes,
+				},
+				reportProgress,
+			)
 		case scenario.FixturePresetBulkLogs:
 			fixtureError = targetNode.ApplyBulkLogs(
 				ctx,
@@ -257,17 +268,27 @@ func applyFixtures(
 // fixtureDescription states the size of a fixture up front, because a bulk preset
 // takes long enough that its cost should be visible before it starts.
 func fixtureDescription(fixture scenario.Fixture) string {
-	if fixture.Preset != scenario.FixturePresetBulkLogs {
+	switch fixture.Preset {
+	case scenario.FixturePresetBulkLogs:
+		return fmt.Sprintf(
+			"Applying fixture %s to %s (%d data streams, %d fields each)",
+			fixture.Preset,
+			fixture.Target,
+			fixture.DataStreams,
+			fixture.FieldsPerStream,
+		)
+	case scenario.FixturePresetBulkDocuments:
+		return fmt.Sprintf(
+			"Applying fixture %s to %s (%d documents, %d extra fields, %d-byte messages)",
+			fixture.Preset,
+			fixture.Target,
+			fixture.Documents,
+			fixture.FieldsPerDocument,
+			fixture.MessageBytes,
+		)
+	default:
 		return fmt.Sprintf("Applying fixture %s to %s", fixture.Preset, fixture.Target)
 	}
-
-	return fmt.Sprintf(
-		"Applying fixture %s to %s (%d indices, %d fields each)",
-		fixture.Preset,
-		fixture.Target,
-		fixture.DataStreams,
-		fixture.FieldsPerStream,
-	)
 }
 
 // applyFault turns one declared degradation into the matching Toxiproxy toxic.

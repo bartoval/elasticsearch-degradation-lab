@@ -161,15 +161,38 @@ func (node *Node) requestJSON(
 	body any,
 	result any,
 ) error {
+	if body == nil {
+		return node.request(ctx, method, path, "", nil, result)
+	}
+
+	encodedBody, encodeError := json.Marshal(body)
+	if encodeError != nil {
+		return fmt.Errorf("encode Elasticsearch request: %w", encodeError)
+	}
+
+	return node.request(ctx, method, path, "application/json", encodedBody, result)
+}
+
+// requestNDJSON sends a newline-delimited body, which is what the bulk API reads.
+// It shares the response handling with requestJSON so that a bulk failure is
+// reported exactly like any other.
+func (node *Node) requestNDJSON(ctx context.Context, path string, body []byte, result any) error {
+	return node.request(ctx, http.MethodPost, path, "application/x-ndjson", body, result)
+}
+
+// request carries the parts every Elasticsearch call shares: the credentials, the
+// status check, and the decision to quote a failed response rather than swallow it.
+func (node *Node) request(
+	ctx context.Context,
+	method string,
+	path string,
+	contentType string,
+	body []byte,
+	result any,
+) error {
 	var requestBody io.Reader
-
 	if body != nil {
-		encodedBody, encodeError := json.Marshal(body)
-		if encodeError != nil {
-			return fmt.Errorf("encode Elasticsearch request: %w", encodeError)
-		}
-
-		requestBody = bytes.NewReader(encodedBody)
+		requestBody = bytes.NewReader(body)
 	}
 
 	request, requestError := http.NewRequestWithContext(
@@ -183,8 +206,8 @@ func (node *Node) requestJSON(
 	}
 
 	request.SetBasicAuth(elasticsearchUsername, elasticsearchPassword)
-	if body != nil {
-		request.Header.Set("content-type", "application/json")
+	if contentType != "" {
+		request.Header.Set("content-type", contentType)
 	}
 
 	response, responseError := setupHTTPClient.Do(request)

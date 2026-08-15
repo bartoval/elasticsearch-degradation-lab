@@ -3,6 +3,7 @@ package scenario
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strconv"
 )
 
@@ -26,6 +27,7 @@ const (
 	FixturePresetMinimalLogs   FixturePreset = "minimal_logs"
 	FixturePresetMinimalLookup FixturePreset = "minimal_lookup"
 	FixturePresetBulkLogs      FixturePreset = "bulk_logs"
+	FixturePresetBulkDocuments FixturePreset = "bulk_documents"
 )
 
 const (
@@ -36,16 +38,44 @@ const (
 	// MaxFieldsPerStream stays under Elasticsearch's default
 	// index.mapping.total_fields.limit of 1000, which the runner does not raise.
 	MaxFieldsPerStream = 900
+
+	// MaxBulkDocuments bounds a fixture that indexes for real, since these cost
+	// disk and indexing time rather than only cluster state.
+	MaxBulkDocuments = 5000000
+
+	// MaxFieldsPerDocument stays under Elasticsearch's default field limit, as
+	// MaxFieldsPerStream does for the mapping-only preset.
+	MaxFieldsPerDocument = 900
+
+	// MaxMessageBytes bounds one document's text. Row weight times row count is what
+	// a client has to hold, so this is the other half of that product and is capped
+	// for the same reason the count is.
+	MaxMessageBytes = 65536
 )
 
 // Scenario describes the infrastructure, test data, and network faults requested by a YAML file.
 type Scenario struct {
-	Version  int       `yaml:"version"`
-	ID       string    `yaml:"id"`
-	Name     string    `yaml:"name"`
-	Topology Topology  `yaml:"topology"`
-	Fixtures []Fixture `yaml:"fixtures"`
-	Faults   []Fault   `yaml:"faults"`
+	Version       int           `yaml:"version"`
+	ID            string        `yaml:"id"`
+	Name          string        `yaml:"name"`
+	Elasticsearch Elasticsearch `yaml:"elasticsearch"`
+	Topology      Topology      `yaml:"topology"`
+	Fixtures      []Fixture     `yaml:"fixtures"`
+	Faults        []Fault       `yaml:"faults"`
+}
+
+// Elasticsearch tunes the clusters the runner starts, for scenarios whose subject
+// is a limit rather than a network condition: a query that exhausts the heap, or a
+// result size the defaults refuse to return.
+//
+// Settings are added to the ones the runner already passes, and may not replace
+// them. Those describe where a node listens and where it writes, which the runner
+// has to know to connect the topology and to reset it between runs.
+type Elasticsearch struct {
+	// Heap is passed as -Xms and -Xmx, for example "8g".
+	Heap string `yaml:"heap"`
+	// Settings are extra -E values, keyed as Elasticsearch names them.
+	Settings map[string]string `yaml:"settings"`
 }
 
 // Topology identifies the remote Elasticsearch clusters required by the scenario.
@@ -96,6 +126,12 @@ type Fixture struct {
 	Name            string        `yaml:"name"`
 	DataStreams     int           `yaml:"dataStreams"`
 	FieldsPerStream int           `yaml:"fieldsPerStream"`
+	Documents       int           `yaml:"documents"`
+	// FieldsPerDocument and MessageBytes decide what one row weighs, which is what a
+	// client actually has to hold: row count alone says little, since a query
+	// returning many narrow rows costs far less than one returning few wide ones.
+	FieldsPerDocument int `yaml:"fieldsPerDocument"`
+	MessageBytes      int `yaml:"messageBytes"`
 }
 
 // Fault describes a network degradation applied to a scenario target.
@@ -138,6 +174,10 @@ func (scenarioConfig Scenario) Validate() error {
 		return fmt.Errorf("name is required")
 	}
 
+	if elasticsearchError := validateElasticsearch(scenarioConfig.Elasticsearch); elasticsearchError != nil {
+		return elasticsearchError
+	}
+
 	// Every later section refers to a target by name, so the set of legal names has
 	// to be established before any of them can be checked.
 	targets, remoteError := validateRemotes(scenarioConfig.Topology.Remotes)
@@ -150,6 +190,53 @@ func (scenarioConfig Scenario) Validate() error {
 	}
 
 	return validateFaults(scenarioConfig.Faults, scenarioConfig.Topology.Remotes, targets)
+}
+
+// runnerOwnedSettings are the Elasticsearch settings the runner decides for itself.
+// A scenario that could replace them would move a node's address or its data
+// directory out from under the code that connects the topology and resets it, and
+// the failure would appear far from the line that caused it.
+var runnerOwnedSettings = map[string]bool{
+	"cluster.name":                         true,
+	"node.name":                            true,
+	"network.host":                         true,
+	"discovery.type":                       true,
+	"http.port":                            true,
+	"transport.port":                       true,
+	"path.data":                            true,
+	"path.logs":                            true,
+	"xpack.security.transport.ssl.enabled": true,
+	"cluster.max_shards_per_node":          true,
+}
+
+// heapPattern accepts the sizes Elasticsearch accepts for -Xms and -Xmx.
+var heapPattern = regexp.MustCompile(`^[1-9][0-9]*[mgMG]$`)
+
+// validateElasticsearch rejects tuning that the runner cannot honour, so that a
+// scenario never claims a limit it did not actually get.
+func validateElasticsearch(elasticsearchConfig Elasticsearch) error {
+	if elasticsearchConfig.Heap != "" && !heapPattern.MatchString(elasticsearchConfig.Heap) {
+		return fmt.Errorf(
+			"elasticsearch.heap %q must be a size such as 512m or 8g",
+			elasticsearchConfig.Heap,
+		)
+	}
+
+	for name, value := range elasticsearchConfig.Settings {
+		if name == "" {
+			return fmt.Errorf("elasticsearch.settings has an empty name")
+		}
+
+		if runnerOwnedSettings[name] {
+			return fmt.Errorf("elasticsearch.settings cannot set %q, the runner owns it", name)
+		}
+
+		if value == "" {
+			return fmt.Errorf("elasticsearch.settings[%q] is empty", name)
+		}
+	}
+
+	return nil
 }
 
 // validateRemotes checks the topology and returns the target names a fixture or a
@@ -239,7 +326,8 @@ func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
 
 		presetIsSupported := fixture.Preset == FixturePresetMinimalLogs ||
 			fixture.Preset == FixturePresetMinimalLookup ||
-			fixture.Preset == FixturePresetBulkLogs
+			fixture.Preset == FixturePresetBulkLogs ||
+			fixture.Preset == FixturePresetBulkDocuments
 		if !presetIsSupported {
 			return fmt.Errorf(
 				"fixtures[%d].preset %q is not supported",
@@ -248,12 +336,43 @@ func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
 			)
 		}
 
-		if fixture.Preset == FixturePresetBulkLogs {
-			if validationError := validateBulkLogs(fixtureIndex, fixture); validationError != nil {
-				return validationError
-			}
+		if knobError := validateFixtureKnobs(fixtureIndex, fixture); knobError != nil {
+			return knobError
+		}
+	}
 
-			continue
+	return nil
+}
+
+// validateFixtureKnobs checks that a fixture asks only for the sizing its preset
+// reads, so that a scenario never declares a number that silently does nothing.
+func validateFixtureKnobs(fixtureIndex int, fixture Fixture) error {
+	switch fixture.Preset {
+	case FixturePresetBulkLogs:
+		if fixture.Documents != 0 || fixture.FieldsPerDocument != 0 || fixture.MessageBytes != 0 {
+			return fmt.Errorf(
+				"fixtures[%d] document sizing applies to preset %q only",
+				fixtureIndex,
+				FixturePresetBulkDocuments,
+			)
+		}
+
+		return validateBulkLogs(fixtureIndex, fixture)
+	case FixturePresetBulkDocuments:
+		if fixture.FieldsPerDocument < 0 || fixture.FieldsPerDocument > MaxFieldsPerDocument {
+			return fmt.Errorf(
+				"fixtures[%d].fieldsPerDocument must be between 0 and %d",
+				fixtureIndex,
+				MaxFieldsPerDocument,
+			)
+		}
+
+		if fixture.MessageBytes < 0 || fixture.MessageBytes > MaxMessageBytes {
+			return fmt.Errorf(
+				"fixtures[%d].messageBytes must be between 0 and %d",
+				fixtureIndex,
+				MaxMessageBytes,
+			)
 		}
 
 		if fixture.DataStreams != 0 || fixture.FieldsPerStream != 0 {
@@ -264,9 +383,32 @@ func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
 				FixturePresetBulkLogs,
 			)
 		}
-	}
 
-	return nil
+		if fixture.Documents < 1 {
+			return fmt.Errorf("fixtures[%d].documents must be at least 1", fixtureIndex)
+		}
+
+		if fixture.Documents > MaxBulkDocuments {
+			return fmt.Errorf(
+				"fixtures[%d].documents cannot exceed %d",
+				fixtureIndex,
+				MaxBulkDocuments,
+			)
+		}
+
+		return nil
+	default:
+
+		if fixture.DataStreams != 0 || fixture.FieldsPerStream != 0 ||
+			fixture.Documents != 0 || fixture.FieldsPerDocument != 0 || fixture.MessageBytes != 0 {
+			return fmt.Errorf(
+				"fixtures[%d] sizing applies to the bulk presets only",
+				fixtureIndex,
+			)
+		}
+
+		return nil
+	}
 }
 
 // validateFaults rejects degradations that name an unknown target, or that mix the

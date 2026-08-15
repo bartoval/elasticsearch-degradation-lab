@@ -44,7 +44,10 @@ is ready.
   activation, process monitoring, and shutdown.
 - **Elasticsearch integration** starts isolated single-node snapshots using
   Kibana's `scripts/es.js`, configures CCS aliases, and sends authenticated setup
-  requests for fixtures and health checks.
+  requests for fixtures and health checks. Fixtures come in two kinds, because the
+  cost being reproduced differs: some create mappings only, which is what index
+  resolution and field capabilities read, while others index documents, which is
+  what a query has to return.
 - **Toxiproxy integration** creates the network routes and applies latency or
   bandwidth toxics through its local HTTP API.
 - **Process manager** owns the child processes and their process groups, allowing a
@@ -62,7 +65,8 @@ The `up` command builds a scenario in this order:
    for every logical remote alias.
 4. Start the optional remote Elasticsearch node, followed by the coordinator. Both
    use the snapshot version selected by the Kibana checkout and isolated runtime
-   directories.
+   directories, and both receive whatever heap and extra settings the scenario
+   declared, so that a limit under test never depends on which node answered.
 5. Poll authenticated cluster health until each Elasticsearch node is ready.
 6. Register every CCS alias on the coordinator in proxy mode. Each alias points to
    its own Toxiproxy port, although all aliases may lead to the same physical remote.
@@ -82,8 +86,9 @@ that port and forwards requests to the coordinator's direct HTTP endpoint on
 makes during normal use, including non-CCS requests.
 
 For CCS, the coordinator connects to logical remote aliases through transport
-proxies on ports `9401-9800`. Each proxy forwards to the physical remote transport
-endpoint on `9301`. This indirection provides two useful mechanisms:
+proxies, each on its own port from a reserved range, all forwarding to the physical
+remote transport endpoint on `9301`. This indirection provides two useful
+mechanisms:
 
 - many logical clusters can be simulated with one physical remote Elasticsearch
   process;
@@ -110,8 +115,9 @@ Toxiproxy so that no cluster is left pointing at a proxy that has already vanish
 
 ## Deliberate boundaries
 
-- The runner supports zero or one physical remote cluster and up to 400 logical CCS
-  aliases.
+- The runner supports zero or one physical remote cluster. The number of logical CCS
+  aliases is bounded by the port range reserved for their proxies, and a scenario
+  that exceeds it is rejected with the limit named.
 - Kibana is started, configured, and stopped independently by the operator.
 - All managed services listen locally; the tool is intended for development and
   reproducible investigation, not deployment.

@@ -38,6 +38,57 @@ ignored by Git:
 Elasticsearch snapshot archives are shared with the selected Kibana checkout at
 `<kibana-dir>/.es/cache`. Scenario data directories are reset on every `up` run.
 
+## Working on the code
+
+Go 1.26 or newer, and one dependency beyond the standard library. Run from source
+without installing anything:
+
+```bash
+go run ./cmd/elasticsearch-degradation-lab validate scenarios/1remote__slow25s.yml
+go run ./cmd/elasticsearch-degradation-lab up scenarios/1remote__slow25s.yml
+```
+
+`validate` starts no processes, so it is the fast loop while changing the schema.
+`up` needs the Kibana checkout and takes minutes, so it is the slow one.
+
+### Where things live
+
+```text
+cmd/elasticsearch-degradation-lab   arguments, exit codes, what to print
+internal/runner                     startup order, ports, when a session is over
+internal/elasticsearch              one node: process, readiness, REST calls, fixtures
+internal/toxiproxy                  the binary, the server, proxies and toxics
+internal/scenario                   the YAML schema and its rules
+internal/process                    signals and process groups
+```
+
+Dependencies point one way: `cmd` knows only `runner` and `scenario`; `runner` knows
+the three below it; `scenario` and `process` know nothing. Keeping that direction is
+what stops presentation decisions from reaching the code that supervises processes.
+
+### Adding to a scenario
+
+Most changes touch three files in the same order:
+
+1. `internal/scenario/scenario.go` — the field, and a rule that rejects a value the
+   runner cannot honour. Prefer rejecting over ignoring: a number that was declared
+   and then silently dropped is worse than one that was refused.
+2. The package that performs it — a fixture in `internal/elasticsearch/fixture.go`,
+   a toxic in `internal/toxiproxy/proxy.go`.
+3. `internal/runner/steps.go` — the wiring, plus the progress line that says what is
+   about to happen and how large it is.
+
+Then a scenario file that uses it, a row in `scenarios/README.md`, and the schema
+paragraph in the main `README.md`.
+
+### Conventions
+
+Errors are wrapped with `%w` and read as a sentence from the outside in, so that a
+failure names the step before the cause. Comments explain why a line exists rather
+than what it does; the numbers that describe a particular experiment belong in the
+scenario file that runs it, not in the code or the README, since only the scenario
+can be rerun to check them.
+
 ## Development checks
 
 Run the formatting, static analysis, and build checks before submitting a change:
@@ -46,6 +97,15 @@ Run the formatting, static analysis, and build checks before submitting a change
 go fmt ./...
 go vet ./...
 go build ./cmd/elasticsearch-degradation-lab
+```
+
+Every scenario should still validate, which catches a schema change that the files
+were not updated for:
+
+```bash
+for scenario in scenarios/*.yml; do
+  go run ./cmd/elasticsearch-degradation-lab validate "$scenario" || break
+done
 ```
 
 ## Release artifacts

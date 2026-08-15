@@ -3,11 +3,13 @@ package elasticsearch
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,9 +49,9 @@ const (
 	// package allows, since every generated data stream costs one shard.
 	maxShardsPerNode = 5000
 
-	// elasticsearchJavaOpts raises the heap above the snapshot default, which a
-	// fan-out fixture exhausts while answering _field_caps over its mappings.
-	elasticsearchJavaOpts = "-Xms2g -Xmx2g"
+	// defaultHeap sits above the snapshot default, which a fan-out fixture exhausts
+	// while answering _field_caps over its mappings. A scenario can raise it.
+	defaultHeap = "2g"
 )
 
 var (
@@ -57,11 +59,28 @@ var (
 	setupHTTPClient     = &http.Client{Timeout: setupRequestTimeout}
 )
 
-// Options identifies one Elasticsearch node and its local ports.
+// Options identifies one Elasticsearch node, its local ports, and any tuning the
+// scenario asked for beyond the runner's own defaults.
 type Options struct {
 	ID            string
 	HTTPPort      int
 	TransportPort int
+	// Heap overrides the default when set, as an Elasticsearch size such as "8g".
+	Heap string
+	// ExtraSettings are added after the runner's own -E values. The runner rejects
+	// names it owns before reaching here, so these can only add.
+	ExtraSettings map[string]string
+}
+
+// javaOptions renders the heap the scenario asked for, or the default that a
+// fan-out fixture needs to answer _field_caps over its mappings.
+func (options Options) javaOptions() string {
+	heap := options.Heap
+	if heap == "" {
+		heap = defaultHeap
+	}
+
+	return "-Xms" + heap + " -Xmx" + heap
 }
 
 // Node contains only the state required to wait for and stop one local node.
@@ -132,7 +151,7 @@ func Start(
 		Directory: kibanaDirectory,
 		// A fan-out fixture holds tens of thousands of field mappings in cluster
 		// state, and _field_caps over them exhausts the small default heap.
-		Environment: append(os.Environ(), "ES_JAVA_OPTS="+elasticsearchJavaOpts),
+		Environment: append(os.Environ(), "ES_JAVA_OPTS="+options.javaOptions()),
 		Output:      logFile,
 		// Kibana's tool is a launcher: the Elasticsearch that matters runs below it,
 		// so signalling only the launcher would leave that one holding the ports.
@@ -388,7 +407,7 @@ func snapshotArguments(
 	logDirectory string,
 	options Options,
 ) []string {
-	return []string{
+	arguments := []string{
 		scriptPath,
 		"snapshot",
 		"--base-path",
@@ -408,4 +427,12 @@ func snapshotArguments(
 		// machine runs out of room.
 		"-E", "cluster.max_shards_per_node=" + strconv.Itoa(maxShardsPerNode),
 	}
+
+	// Scenario settings come last so they read as additions to the list above, and
+	// in name order so that two runs of one scenario produce the same command line.
+	for _, name := range slices.Sorted(maps.Keys(options.ExtraSettings)) {
+		arguments = append(arguments, "-E", name+"="+options.ExtraSettings[name])
+	}
+
+	return arguments
 }

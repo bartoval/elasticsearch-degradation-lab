@@ -139,11 +139,7 @@ func (environment *Environment) build(
 			options.KibanaDirectory,
 			sessionDirectory,
 			"remote",
-			elasticsearch.Options{
-				ID:            remote.ID,
-				HTTPPort:      remoteHTTPPort,
-				TransportPort: remoteTransportPort,
-			},
+			nodeOptions(options.Scenario, remote.ID, remoteHTTPPort, remoteTransportPort),
 			options.ReportProgress,
 		)
 		if remoteError != nil {
@@ -158,11 +154,12 @@ func (environment *Environment) build(
 		options.KibanaDirectory,
 		sessionDirectory,
 		scenario.CoordinatorTarget,
-		elasticsearch.Options{
-			ID:            scenario.CoordinatorTarget,
-			HTTPPort:      coordinatorHTTPPort,
-			TransportPort: coordinatorTransportPort,
-		},
+		nodeOptions(
+			options.Scenario,
+			scenario.CoordinatorTarget,
+			coordinatorHTTPPort,
+			coordinatorTransportPort,
+		),
 		options.ReportProgress,
 	)
 	if coordinatorError != nil {
@@ -204,6 +201,23 @@ func (environment *Environment) build(
 	}
 
 	return applyFaults(ctx, options.Scenario.Faults, proxyNamesByTarget, options.ReportProgress)
+}
+
+// nodeOptions gives both clusters the same scenario tuning, since a limit that only
+// one of them honoured would make a measurement depend on which node answered.
+func nodeOptions(
+	scenarioConfig scenario.Scenario,
+	id string,
+	httpPort int,
+	transportPort int,
+) elasticsearch.Options {
+	return elasticsearch.Options{
+		ID:            id,
+		HTTPPort:      httpPort,
+		TransportPort: transportPort,
+		Heap:          scenarioConfig.Elasticsearch.Heap,
+		ExtraSettings: scenarioConfig.Elasticsearch.Settings,
+	}
 }
 
 // Wait holds the environment open until the caller cancels or a process dies. A
