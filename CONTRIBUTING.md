@@ -65,11 +65,13 @@ internal/elasticsearch              node lifecycle, REST client, CCS and fixture
 internal/toxiproxy                  the binary, the server, proxies and toxics
 internal/scenario                   the YAML schema and its rules
 internal/process                    signals and process groups
+scenarios                           YAML sources and the embedded standard catalog
 ```
 
-Dependencies point one way: `cmd` knows only `runner` and `scenario`; `runner` knows
-the three below it; `scenario` and `process` know nothing. Keeping that direction is
-what stops presentation decisions from reaching the code that supervises processes.
+Dependencies point one way: `cmd` resolves the embedded catalog and knows `runner`
+and `scenario`; `runner` knows the three packages below it; `scenario` and `process`
+know nothing. Keeping that direction is what stops presentation decisions from
+reaching the code that supervises processes.
 
 ### Adding to a scenario
 
@@ -120,6 +122,6 @@ pushed. It produces archives and SHA-256 checksums for Linux and macOS on x64 an
 ARM64. Manual runs keep their files as workflow-run artifacts. Tag runs also create
 a GitHub release for the tag and attach every archive and checksum to it.
 
-Each archive contains the executable, every scenario, `README.md`, `ARCHITECTURE.md`,
-`CONTRIBUTING.md`, and `LICENSE`. Windows and WSL artifacts are intentionally not
-produced.
+Each archive contains the executable, readable copies of every embedded scenario,
+`README.md`, `ARCHITECTURE.md`, `CONTRIBUTING.md`, and `LICENSE`. Windows and WSL
+artifacts are intentionally not produced.

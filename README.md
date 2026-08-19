@@ -20,22 +20,53 @@ supported.
 By default, the runner looks for Kibana at `../kibana`, relative to the directory
 where you run the command. Use `--kibana-dir` when the checkout is elsewhere.
 
-### Run from source
+### Run a release
 
-Go 1.26 or newer is required. From a clone, use two terminals. First activate
-Kibana's Node.js version, then start the scenario from the root of this repository:
+Download and extract the archive for your system from the
+[latest release](https://github.com/bartoval/elasticsearch-degradation-lab/releases/latest).
+The standard scenarios are embedded, so Go and a clone of this repository are not
+needed.
+
+#### Linux
+
+Choose `linux-amd64` for an x64 machine or `linux-arm64` for ARM64, then run:
 
 ```bash
-cd /path/to/kibana
-nvm use
-
-cd /path/to/elasticsearch-degradation-lab
-go run ./cmd/elasticsearch-degradation-lab up \
-  scenarios/1remote__slow25s.yml \
+./elasticsearch-degradation-lab-linux-amd64/elasticsearch-degradation-lab up \
+  1remote__slow25s \
   --kibana-dir /path/to/kibana
 ```
 
-In the second terminal, start Kibana normally:
+#### macOS
+
+Choose `darwin-arm64` for Apple Silicon or `darwin-amd64` for an Intel Mac, then
+run:
+
+```bash
+./elasticsearch-degradation-lab-darwin-arm64/elasticsearch-degradation-lab up \
+  1remote__slow25s \
+  --kibana-dir /path/to/kibana
+```
+
+The macOS release is not signed or notarized. Only if macOS blocks it, remove
+quarantine and run the previous command again:
+
+```bash
+xattr -d com.apple.quarantine \
+  ./elasticsearch-degradation-lab-darwin-arm64/elasticsearch-degradation-lab
+
+./elasticsearch-degradation-lab-darwin-arm64/elasticsearch-degradation-lab up \
+  1remote__slow25s \
+  --kibana-dir /path/to/kibana
+```
+
+Wait until the runner prints:
+
+```text
+Scenario "<scenario name>" infrastructure is ready.
+```
+
+Then, in a second terminal, start Kibana:
 
 ```bash
 cd /path/to/kibana
@@ -43,12 +74,31 @@ nvm use
 yarn start
 ```
 
-Wait for both Kibana and the runner to become ready before reproducing the behavior.
-The runner prints:
+### Run from source
 
-```text
-Scenario "<scenario name>" infrastructure is ready.
+Go 1.26 or newer is required. From a clone, activate Kibana's Node.js version and
+start the scenario:
+
+```bash
+cd /path/to/kibana
+nvm use
+
+cd /path/to/elasticsearch-degradation-lab
+go run ./cmd/elasticsearch-degradation-lab up \
+  1remote__slow25s \
+  --kibana-dir /path/to/kibana
 ```
+
+Wait for the same infrastructure-ready message shown above. Then start Kibana in a
+second terminal:
+
+```bash
+cd /path/to/kibana
+nvm use
+yarn start
+```
+
+Wait for Kibana to become ready before reproducing the behavior.
 
 ### Install with Go
 
@@ -59,48 +109,17 @@ go install github.com/bartoval/elasticsearch-degradation-lab/cmd/elasticsearch-d
 ```
 
 Ensure `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is unset, is in your
-`PATH`. `go install` installs only the executable, not the scenario catalog. Run it
-from a clone containing `scenarios/`, or pass an absolute scenario path:
+`PATH`. The standard scenario catalog is embedded in the executable, so this does
+not require a checkout of this repository:
 
 ```bash
-cd /path/to/elasticsearch-degradation-lab
 elasticsearch-degradation-lab up \
-  scenarios/1remote__slow25s.yml \
+  1remote__slow25s \
   --kibana-dir /path/to/kibana
 ```
 
 On macOS this avoids Gatekeeper because the executable is compiled locally rather
 than downloaded as an unsigned binary.
-
-### Using a release archive on macOS
-
-Release binaries are neither signed nor notarized. Choose `darwin-arm64` for Apple
-Silicon or `darwin-amd64` for an Intel Mac. Download the archive and its matching
-`.sha256` file, then verify it before extracting:
-
-```bash
-shasum -a 256 -c elasticsearch-degradation-lab-darwin-arm64.tar.gz.sha256
-tar -xzf elasticsearch-degradation-lab-darwin-arm64.tar.gz
-```
-
-If macOS blocks the executable, remove the quarantine attribute from that binary:
-
-```bash
-xattr -d com.apple.quarantine \
-  elasticsearch-degradation-lab-darwin-arm64/elasticsearch-degradation-lab
-```
-
-If the attribute is not present, `xattr` reports that there is nothing to remove.
-Run the tool from the extracted directory, which includes the scenario catalog:
-
-```bash
-cd elasticsearch-degradation-lab-darwin-arm64
-./elasticsearch-degradation-lab up \
-  scenarios/1remote__slow25s.yml \
-  --kibana-dir /path/to/kibana
-```
-
-Start Kibana separately with `yarn start`, as shown in the source instructions.
 
 Press `Ctrl+C` in the runner terminal to stop Elasticsearch and Toxiproxy. Stop Kibana
 separately. A clean shutdown removes the per-scenario Elasticsearch installation,
@@ -288,13 +307,14 @@ top.
 Scenario file names describe the **infrastructure** — topology, fault, fixtures —
 rather than a single Kibana screen, because one profile usually serves several
 workflows. The catalog in [`scenarios/README.md`](scenarios/README.md) lists every
-profile with what it builds and what it is good for.
+profile with what it builds and what it is good for. Standard scenarios can be
+selected by filename without `.yml`; an explicit path continues to load a custom
+or checked-out YAML file.
 
 Validate one without starting any processes:
 
 ```bash
-go run ./cmd/elasticsearch-degradation-lab validate \
-  scenarios/fanout100__latency500.yml
+go run ./cmd/elasticsearch-degradation-lab validate fanout100__latency500
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for implementation details and development

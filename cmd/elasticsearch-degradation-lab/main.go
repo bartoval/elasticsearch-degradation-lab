@@ -7,15 +7,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/bartoval/elasticsearch-degradation-lab/internal/runner"
 	"github.com/bartoval/elasticsearch-degradation-lab/internal/scenario"
+	standardscenarios "github.com/bartoval/elasticsearch-degradation-lab/scenarios"
 )
 
 const usage = `Usage:
-  elasticsearch-degradation-lab validate <scenario.yml>
-  elasticsearch-degradation-lab up <scenario.yml> [--kibana-dir <path>]
+  elasticsearch-degradation-lab validate <scenario-name|scenario.yml>
+  elasticsearch-degradation-lab up <scenario-name|scenario.yml> [--kibana-dir <path>]
   elasticsearch-degradation-lab --help`
 
 const (
@@ -30,10 +32,10 @@ const kibanaDirectoryOption = "--kibana-dir"
 //
 //	os.Args[0]: executable name
 //	os.Args[1]: command, such as "validate" or "up"
-//	os.Args[2]: scenario file path
+//	os.Args[2]: built-in scenario name or scenario file path
 //
 // run receives os.Args[1:], so the command becomes args[0] and the scenario
-// file path becomes args[1].
+// reference becomes args[1].
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -53,7 +55,7 @@ func run(args []string) int {
 		return exitSuccess
 	case "validate":
 		if len(args) < 2 {
-			return reportInvalidArguments(fmt.Errorf("missing scenario path for %s", command))
+			return reportInvalidArguments(fmt.Errorf("missing scenario name or path for %s", command))
 		}
 
 		if len(args) > 2 {
@@ -63,7 +65,7 @@ func run(args []string) int {
 		return runValidateCommand(args[1])
 	case "up":
 		if len(args) < 2 {
-			return reportInvalidArguments(fmt.Errorf("missing scenario path for %s", command))
+			return reportInvalidArguments(fmt.Errorf("missing scenario name or path for %s", command))
 		}
 
 		kibanaDirectory, optionsError := parseUpOptions(args[2:])
@@ -108,8 +110,8 @@ func parseUpOptions(arguments []string) (string, error) {
 }
 
 // runValidateCommand reports configuration problems as CLI output and an exit code.
-func runValidateCommand(scenarioPath string) int {
-	loadedScenario, loadError := scenario.Load(scenarioPath)
+func runValidateCommand(scenarioReference string) int {
+	loadedScenario, loadError := loadScenario(scenarioReference)
 	if loadError != nil {
 		fmt.Fprintf(os.Stderr, "scenario validation failed: %v\n", loadError)
 
@@ -122,8 +124,8 @@ func runValidateCommand(scenarioPath string) int {
 }
 
 // runUpCommand resolves local paths before starting the scenario infrastructure.
-func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
-	loadedScenario, loadError := scenario.Load(scenarioPath)
+func runUpCommand(scenarioReference string, configuredKibanaDirectory string) int {
+	loadedScenario, loadError := loadScenario(scenarioReference)
 	if loadError != nil {
 		fmt.Fprintf(os.Stderr, "scenario validation failed: %v\n", loadError)
 
@@ -193,6 +195,26 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 	}
 
 	return exitCode
+}
+
+// loadScenario treats existing files and explicit paths as external scenarios;
+// otherwise it resolves the argument from the catalog embedded in the binary.
+func loadScenario(reference string) (scenario.Scenario, error) {
+	if strings.ContainsAny(reference, `/\\`) {
+		return scenario.Load(reference)
+	}
+
+	_, statError := os.Stat(reference)
+	if statError == nil || !errors.Is(statError, os.ErrNotExist) {
+		return scenario.Load(reference)
+	}
+
+	filename, contents, catalogError := standardscenarios.Read(reference)
+	if catalogError != nil {
+		return scenario.Scenario{}, catalogError
+	}
+
+	return scenario.LoadBytes(filename, contents)
 }
 
 // announceReady tells the operator the environment is theirs to drive.
