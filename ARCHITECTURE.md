@@ -103,15 +103,17 @@ counters so that observed timing can be related to actual traffic.
 
 ## Runtime state and lifecycle
 
-Each scenario owns a directory under `.runtime/<scenario-id>/` containing isolated
-Elasticsearch data and component logs. Data is reset on every `up`, while downloaded
-Toxiproxy binaries and the Elasticsearch snapshot cache are reused.
+Each scenario owns a directory under `.runtime/<scenario-id>/` while it is active.
+After a clean shutdown the isolated Elasticsearch installation, data, and internal
+logs are removed; operator-facing component logs remain available. Downloaded
+Toxiproxy binaries and Kibana's Elasticsearch snapshot cache are reused.
 
 After startup, the runner remains active and monitors Toxiproxy and every
-Elasticsearch launcher. `Ctrl+C` or `SIGTERM` cancels the shared run context and
-starts an orderly shutdown. An unexpected component exit invalidates the scenario,
-reports the relevant log, and also triggers cleanup. Elasticsearch nodes stop before
-Toxiproxy so that no cluster is left pointing at a proxy that has already vanished.
+Elasticsearch launcher. `Ctrl+C` or `SIGTERM` ends the active wait and starts an
+explicitly ordered shutdown. An unexpected component exit invalidates the scenario,
+reports the relevant log, and also triggers cleanup. Components stop in reverse
+startup order: coordinator, remote when present, then Toxiproxy. If any stop fails,
+the complete runtime is retained for inspection.
 
 ## Deliberate boundaries
 

@@ -151,8 +151,8 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 
 	kibanaDirectory = absoluteKibanaDirectory
 
-	// Convert Ctrl+C and SIGTERM into shared cancellation so downloads, readiness
-	// checks, and every child process can stop together.
+	// Convert Ctrl+C and SIGTERM into cancellation for startup and the active wait.
+	// The environment owns child shutdown separately so it can preserve stop order.
 	runContext, stopSignals := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,

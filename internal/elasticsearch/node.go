@@ -58,7 +58,7 @@ const (
 
 var (
 	readinessHTTPClient = &http.Client{Timeout: readinessRequestTimeout}
-	setupHTTPClient     = &http.Client{Timeout: setupRequestTimeout}
+	defaultSetupClient  = &http.Client{Timeout: setupRequestTimeout}
 )
 
 // Options identifies one Elasticsearch node, its local ports, and any tuning the
@@ -93,6 +93,7 @@ type Node struct {
 	httpPort      int
 	transportPort int
 	child         *process.Child
+	setupClient   *http.Client
 }
 
 // Start launches Kibana's existing Elasticsearch snapshot tool.
@@ -171,6 +172,7 @@ func Start(
 		httpPort:      options.HTTPPort,
 		transportPort: options.TransportPort,
 		child:         child,
+		setupClient:   defaultSetupClient,
 	}, nil
 }
 

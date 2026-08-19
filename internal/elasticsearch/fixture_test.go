@@ -31,10 +31,9 @@ func (body *trackingBody) Close() error {
 }
 
 func TestApplyBulkDocumentsRejectsItemFailure(t *testing.T) {
-	originalClient := setupHTTPClient
-	t.Cleanup(func() { setupHTTPClient = originalClient })
+	t.Parallel()
 
-	setupHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	setupClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body := `{}`
 		if request.URL.Path == "/logs-test/_bulk" {
 			body = `{
@@ -58,7 +57,7 @@ func TestApplyBulkDocumentsRejectsItemFailure(t *testing.T) {
 		}, nil
 	})}
 
-	node := &Node{url: "http://elasticsearch.invalid"}
+	node := &Node{url: "http://elasticsearch.invalid", setupClient: setupClient}
 	fixtureError := node.ApplyBulkDocuments(
 		context.Background(),
 		"logs-test",
@@ -82,11 +81,10 @@ func TestApplyBulkDocumentsRejectsItemFailure(t *testing.T) {
 }
 
 func TestRequestDrainsAndClosesUnusedResponse(t *testing.T) {
-	originalClient := setupHTTPClient
-	t.Cleanup(func() { setupHTTPClient = originalClient })
+	t.Parallel()
 
 	body := &trackingBody{reader: strings.NewReader("response contents")}
-	setupHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	setupClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
@@ -95,7 +93,7 @@ func TestRequestDrainsAndClosesUnusedResponse(t *testing.T) {
 		}, nil
 	})}
 
-	node := &Node{url: "http://elasticsearch.invalid"}
+	node := &Node{url: "http://elasticsearch.invalid", setupClient: setupClient}
 	if requestError := node.request(
 		context.Background(),
 		http.MethodGet,
@@ -116,6 +114,7 @@ func TestRequestDrainsAndClosesUnusedResponse(t *testing.T) {
 }
 
 func TestBulkItemErrorLimitsReportedDetails(t *testing.T) {
+	t.Parallel()
 	items := make([]map[string]bulkItemResult, maxBulkFailureDetails+2)
 	for itemIndex := range items {
 		items[itemIndex] = map[string]bulkItemResult{
@@ -139,6 +138,7 @@ func TestBulkItemErrorLimitsReportedDetails(t *testing.T) {
 }
 
 func TestDocumentTimestampUsesExplicitRange(t *testing.T) {
+	t.Parallel()
 	anchor := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
 	shape := DocumentShape{Count: 5, TimeRange: 24 * time.Hour}
 
@@ -154,6 +154,7 @@ func TestDocumentTimestampUsesExplicitRange(t *testing.T) {
 }
 
 func TestDocumentTimestampPreservesOneSecondDefault(t *testing.T) {
+	t.Parallel()
 	anchor := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
 	actual := documentTimestamp(anchor, 3, DocumentShape{Count: 10})
 	wanted := anchor.Add(-3 * time.Second)

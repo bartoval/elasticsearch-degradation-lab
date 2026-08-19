@@ -17,7 +17,7 @@ The `up` command:
 
 ## Runtime files
 
-Toxiproxy, isolated Elasticsearch installations, data, and logs are stored under
+Toxiproxy, isolated Elasticsearch installations, data, and logs are created under
 `.runtime/`, relative to the directory where the runner starts. The directory is
 ignored by Git:
 
@@ -36,7 +36,9 @@ ignored by Git:
 ```
 
 Elasticsearch snapshot archives are shared with the selected Kibana checkout at
-`<kibana-dir>/.es/cache`. Scenario data directories are reset on every `up` run.
+`<kibana-dir>/.es/cache`. A clean stop removes the per-scenario `elasticsearch/`
+directory and preserves `logs/` and `.runtime/tools/`. If a component does not stop
+cleanly, the complete scenario directory remains available for inspection.
 
 ## Working on the code
 
@@ -56,7 +58,7 @@ go run ./cmd/elasticsearch-degradation-lab up scenarios/1remote__slow25s.yml
 ```text
 cmd/elasticsearch-degradation-lab   arguments, exit codes, what to print
 internal/runner                     startup order, ports, when a session is over
-internal/elasticsearch              one node: process, readiness, REST calls, fixtures
+internal/elasticsearch              node lifecycle, REST client, CCS and fixtures
 internal/toxiproxy                  the binary, the server, proxies and toxics
 internal/scenario                   the YAML schema and its rules
 internal/process                    signals and process groups
@@ -70,11 +72,11 @@ what stops presentation decisions from reaching the code that supervises process
 
 Most changes touch three files in the same order:
 
-1. `internal/scenario/scenario.go` — the field, and a rule that rejects a value the
-   runner cannot honour. Prefer rejecting over ignoring: a number that was declared
-   and then silently dropped is worse than one that was refused.
-2. The package that performs it — a fixture in `internal/elasticsearch/fixture.go`,
-   a toxic in `internal/toxiproxy/proxy.go`.
+1. `internal/scenario/types.go` and `validate.go` — the field, and a rule that rejects
+   a value the runner cannot honour. Prefer rejecting over ignoring: a number that
+   was declared and then silently dropped is worse than one that was refused.
+2. The package that performs it — the matching `fixture_*.go` file in
+   `internal/elasticsearch`, or `internal/toxiproxy/proxy.go` for a toxic.
 3. `internal/runner/steps.go` — the wiring, plus the progress line that says what is
    about to happen and how large it is.
 
