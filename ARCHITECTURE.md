@@ -15,7 +15,7 @@ the same local Elasticsearch endpoints.
 ```text
                          control and setup
 
-Scenario YAML ──► CLI ──► Runner ─────► Toxiproxy API
+Built-in or external scenario ──► CLI ──► Runner ─────► Toxiproxy API
                               ├────────► coordinator Elasticsearch
                               └────────► optional remote Elasticsearch
 
@@ -38,7 +38,8 @@ is ready.
 
 ## Main components
 
-- **CLI** loads a scenario and exposes `validate` and `up`. YAML decoding is strict,
+- **CLI** resolves a standard scenario embedded in the executable by name, or loads
+  an external YAML path, and exposes `validate` and `up`. YAML decoding is strict,
   so unknown fields and unsupported values fail before any process is started.
 - **Runner** coordinates startup order, readiness, fixture creation, fault
   activation, process monitoring, and shutdown.
@@ -57,8 +58,8 @@ is ready.
 
 The `up` command builds a scenario in this order:
 
-1. Load and validate the YAML scenario. References from fixtures and faults must
-   resolve to the coordinator or the configured remote.
+1. Resolve and validate the built-in or external YAML scenario. References from
+   fixtures and faults must resolve to the coordinator or the configured remote.
 2. Download and verify the Toxiproxy binary when it is not cached, then start its
    local API and wait for it to become ready.
 3. Create the coordinator HTTP proxy and, for a CCS topology, one transport proxy

@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -23,7 +24,16 @@ func Load(scenarioPath string) (Scenario, error) {
 	}
 	defer scenarioFile.Close()
 
-	decoder := yaml.NewDecoder(scenarioFile)
+	return load(scenarioPath, scenarioFile)
+}
+
+// LoadBytes converts embedded YAML into a Scenario using its catalog filename.
+func LoadBytes(filename string, contents []byte) (Scenario, error) {
+	return load(filename, bytes.NewReader(contents))
+}
+
+func load(scenarioPath string, contents io.Reader) (Scenario, error) {
+	decoder := yaml.NewDecoder(contents)
 	decoder.KnownFields(true)
 
 	var loadedScenario Scenario

@@ -71,7 +71,8 @@ jobs:
             ./cmd/elasticsearch-degradation-lab
 
           cp ARCHITECTURE.md CONTRIBUTING.md LICENSE README.md "${package_directory}/"
-          cp -R scenarios "${package_directory}/"
+          mkdir -p "${package_directory}/scenarios"
+          cp scenarios/*.yml scenarios/README.md "${package_directory}/scenarios/"
           tar -C dist -czf "dist/${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}"
           cd dist
           sha256sum "${ARTIFACT_NAME}.tar.gz" > "${ARTIFACT_NAME}.tar.gz.sha256"

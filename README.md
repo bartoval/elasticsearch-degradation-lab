@@ -31,7 +31,7 @@ nvm use
 
 cd /path/to/elasticsearch-degradation-lab
 go run ./cmd/elasticsearch-degradation-lab up \
-  scenarios/1remote__slow25s.yml \
+  1remote__slow25s \
   --kibana-dir /path/to/kibana
 ```
 
@@ -59,13 +59,12 @@ go install github.com/bartoval/elasticsearch-degradation-lab/cmd/elasticsearch-d
 ```
 
 Ensure `$GOBIN`, or `$(go env GOPATH)/bin` when `$GOBIN` is unset, is in your
-`PATH`. `go install` installs only the executable, not the scenario catalog. Run it
-from a clone containing `scenarios/`, or pass an absolute scenario path:
+`PATH`. The standard scenario catalog is embedded in the executable, so this does
+not require a checkout of this repository:
 
 ```bash
-cd /path/to/elasticsearch-degradation-lab
 elasticsearch-degradation-lab up \
-  scenarios/1remote__slow25s.yml \
+  1remote__slow25s \
   --kibana-dir /path/to/kibana
 ```
 
@@ -91,12 +90,11 @@ xattr -d com.apple.quarantine \
 ```
 
 If the attribute is not present, `xattr` reports that there is nothing to remove.
-Run the tool from the extracted directory, which includes the scenario catalog:
+Run the binary directly; the standard scenario catalog is embedded in it:
 
 ```bash
-cd elasticsearch-degradation-lab-darwin-arm64
-./elasticsearch-degradation-lab up \
-  scenarios/1remote__slow25s.yml \
+./elasticsearch-degradation-lab-darwin-arm64/elasticsearch-degradation-lab up \
+  local__rows500k \
   --kibana-dir /path/to/kibana
 ```
 
@@ -288,13 +286,14 @@ top.
 Scenario file names describe the **infrastructure** — topology, fault, fixtures —
 rather than a single Kibana screen, because one profile usually serves several
 workflows. The catalog in [`scenarios/README.md`](scenarios/README.md) lists every
-profile with what it builds and what it is good for.
+profile with what it builds and what it is good for. Standard scenarios can be
+selected by filename without `.yml`; an explicit path continues to load a custom
+or checked-out YAML file.
 
 Validate one without starting any processes:
 
 ```bash
-go run ./cmd/elasticsearch-degradation-lab validate \
-  scenarios/fanout100__latency500.yml
+go run ./cmd/elasticsearch-degradation-lab validate fanout100__latency500
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for implementation details and development
