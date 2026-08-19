@@ -15,25 +15,27 @@
 #
 # The sizes below are calibrated against a measurement rather than chosen. Two
 # thousand documents from Kibana's own makelogs generator returned 13.49 MB from
-# the ES|QL API, which is 6743 bytes over 86 columns per row; the same query against
-# this fixture returns 13.49 MB, within 0.02% of it. At that weight 500k rows are
-# about 3.1 GB, matching the tab size reported in the study this profile serves, and
-# a LIMIT of 100000 alone is roughly 640 MB.
+# the ES|QL API, which is 6743 bytes over 86 columns per row. This fixture uses 86
+# generated fields plus five fixed fields and returns the same 13.49 MB, within
+# 0.02% of the measured payload. It matches response weight rather than the exact
+# makelogs schema. At that weight 500k rows are about 3.1 GB, and LIMIT 100000 is
+# roughly 640 MB.
 #
 # Changing either size changes that correspondence. Message bytes map one to one
 # onto the payload, while extra fields cost about 14 bytes per row rather than their
 # declared width, because an ES|QL response names its columns once and then carries
 # only values.
 #
-# TIME RANGE: timestamps walk one second backwards from the moment the fixture ran,
-# so this many documents reach about six days into the past and the newest is as old
-# as the session. A default range of minutes shows nothing; set the picker to seven
-# days for all of them, or twenty-four hours for roughly 86k.
+# TIME RANGE: all timestamps are distributed across the 24 hours preceding fixture
+# creation, matching makelogs --days 1/0. Use an absolute range anchored to fixture
+# creation when exact row counts matter, since indexing itself takes time.
 #
 # The heap and the two settings are what the defaults refuse: a 100k-row ES|QL
 # result is truncated and the request breaker trips long before the browser is
-# reached. Kibana reaches the coordinator through a proxy, so the byte counters at
-# http://127.0.0.1:8474/metrics measure how much crossed before the tab gave up.
+# reached. Kibana reaches the coordinator through a proxy, but the byte counters at
+# http://127.0.0.1:8474/metrics measure only Elasticsearch <-> Kibana traffic. They
+# do not measure the Kibana -> browser response where the large Fetch body appears;
+# use Chrome DevTools or CDP for that leg.
 
 version: 1
 id: local_rows500k
@@ -55,5 +57,6 @@ fixtures:
     documents: 500000
     fieldsPerDocument: 86
     messageBytes: 5370
+    timeRange: 24h
 
 faults: []

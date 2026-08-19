@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,11 +99,11 @@ func (node *Node) WaitForRemoteAliases(
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case processError := <-node.child.Exited():
+		case <-node.child.Done():
 			return fmt.Errorf(
 				"Elasticsearch %s exited while waiting for remote cluster aliases: %v",
 				node.id,
-				processError,
+				node.child.Wait(),
 			)
 		case <-timeout.C:
 			return fmt.Errorf(
@@ -219,18 +220,41 @@ func (node *Node) request(
 	requestFailed := response.StatusCode < http.StatusOK ||
 		response.StatusCode >= http.StatusMultipleChoices
 	if requestFailed {
-		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, errorBodyLimitBytes))
+		responseBody, readError := io.ReadAll(io.LimitReader(response.Body, errorBodyLimitBytes))
+		drainError := drainResponseBody(response.Body)
 
-		return fmt.Errorf("Elasticsearch returned %s: %s", response.Status, responseBody)
+		return errors.Join(
+			fmt.Errorf("Elasticsearch returned %s: %s", response.Status, responseBody),
+			wrapResponseReadError(readError),
+			drainError,
+		)
 	}
 
 	if result == nil {
-		return nil
+		return drainResponseBody(response.Body)
 	}
 
-	if decodeError := json.NewDecoder(response.Body).Decode(result); decodeError != nil {
-		return fmt.Errorf("decode Elasticsearch response: %w", decodeError)
+	decodeError := json.NewDecoder(response.Body).Decode(result)
+	drainError := drainResponseBody(response.Body)
+	if decodeError != nil {
+		decodeError = fmt.Errorf("decode Elasticsearch response: %w", decodeError)
+	}
+
+	return errors.Join(decodeError, drainError)
+}
+
+func drainResponseBody(body io.Reader) error {
+	if _, drainError := io.Copy(io.Discard, body); drainError != nil {
+		return fmt.Errorf("drain Elasticsearch response: %w", drainError)
 	}
 
 	return nil
+}
+
+func wrapResponseReadError(readError error) error {
+	if readError == nil {
+		return nil
+	}
+
+	return fmt.Errorf("read Elasticsearch error response: %w", readError)
 }

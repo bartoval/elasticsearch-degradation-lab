@@ -11,7 +11,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/bartoval/elasticsearch-degradation-lab/internal/elasticsearch"
 	"github.com/bartoval/elasticsearch-degradation-lab/internal/scenario"
@@ -49,10 +51,19 @@ type Options struct {
 // Environment is a running scenario: every process started, connected and degraded
 // as the scenario asked.
 type Environment struct {
-	toxiproxyServer *toxiproxy.Server
-	toxiproxyLog    string
-	coordinatorNode *elasticsearch.Node
-	remoteNode      *elasticsearch.Node
+	toxiproxyServer  *toxiproxy.Server
+	toxiproxyLog     string
+	coordinatorNode  *elasticsearch.Node
+	remoteNode       *elasticsearch.Node
+	sessionDirectory string
+
+	buildCancel  context.CancelCauseFunc
+	failureDone  chan struct{}
+	failureOnce  sync.Once
+	failureError error
+	stopping     chan struct{}
+	stopOnce     sync.Once
+	stopError    error
 }
 
 // UnexpectedExitError reports a process that ended while the scenario was still
@@ -84,6 +95,10 @@ func (exitError *UnexpectedExitError) Unwrap() error {
 // it takes back whatever it had already started, so the caller is never handed a
 // half-built environment to clean up.
 func Start(ctx context.Context, options Options) (*Environment, error) {
+	if validationError := options.Scenario.Validate(); validationError != nil {
+		return nil, fmt.Errorf("validate scenario: %w", validationError)
+	}
+
 	sessionDirectory := filepath.Join(options.RuntimeDirectory, options.Scenario.ID)
 	toxiproxyLog := filepath.Join(sessionDirectory, "logs", "toxiproxy.log")
 
@@ -94,18 +109,52 @@ func Start(ctx context.Context, options Options) (*Environment, error) {
 		options.ReportProgress,
 	)
 	if toxiproxyError != nil {
+		if ctx.Err() != nil && errors.Is(toxiproxyError, ctx.Err()) {
+			return nil, ctx.Err()
+		}
+
 		return nil, toxiproxyError
 	}
 
 	environment := &Environment{
-		toxiproxyServer: toxiproxyServer,
-		toxiproxyLog:    toxiproxyLog,
+		toxiproxyServer:  toxiproxyServer,
+		toxiproxyLog:     toxiproxyLog,
+		sessionDirectory: sessionDirectory,
+		failureDone:      make(chan struct{}),
+		stopping:         make(chan struct{}),
 	}
+	buildContext, cancelBuild := context.WithCancelCause(ctx)
+	environment.buildCancel = cancelBuild
+	environment.monitorProcess(
+		"Toxiproxy",
+		toxiproxyLog,
+		toxiproxyServer.Done(),
+		toxiproxyServer.Wait,
+	)
 
-	if buildError := environment.build(ctx, options, sessionDirectory); buildError != nil {
+	buildError := environment.build(buildContext, options, sessionDirectory)
+	if buildError == nil {
+		select {
+		case <-environment.failureDone:
+			buildError = environment.failureError
+		default:
+		}
+	}
+	if buildError != nil {
+		select {
+		case <-environment.failureDone:
+			buildError = environment.failureError
+		default:
+			if ctx.Err() != nil {
+				buildError = ctx.Err()
+			}
+		}
+
 		// Undo the part that did start, since a caller holding an error has no
 		// handle to stop it with.
-		_ = environment.Stop()
+		if stopError := environment.Stop(); stopError != nil {
+			return nil, errors.Join(buildError, fmt.Errorf("cleanup failed: %w", stopError))
+		}
 
 		return nil, buildError
 	}
@@ -134,23 +183,51 @@ func (environment *Environment) build(
 	}
 
 	if hasRemote {
+		options.ReportProgress(
+			fmt.Sprintf(
+				"Starting remote Elasticsearch (HTTP %d, transport %d)",
+				remoteHTTPPort,
+				remoteTransportPort,
+			),
+		)
 		remoteNode, remoteError := startElasticsearch(
-			ctx,
+			context.Background(),
 			options.KibanaDirectory,
 			sessionDirectory,
 			"remote",
 			nodeOptions(options.Scenario, remote.ID, remoteHTTPPort, remoteTransportPort),
-			options.ReportProgress,
 		)
 		if remoteError != nil {
 			return remoteError
 		}
 
 		environment.remoteNode = remoteNode
+		environment.monitorProcess(
+			"remote Elasticsearch",
+			remoteNode.LogPath(),
+			remoteNode.Done(),
+			remoteNode.Wait,
+		)
+		if readinessError := waitForElasticsearch(
+			ctx,
+			remoteNode,
+			"remote",
+			options.ReportProgress,
+		); readinessError != nil {
+			return readinessError
+		}
 	}
 
+	options.ReportProgress(
+		fmt.Sprintf(
+			"Starting %s Elasticsearch (HTTP %d, transport %d)",
+			scenario.CoordinatorTarget,
+			coordinatorHTTPPort,
+			coordinatorTransportPort,
+		),
+	)
 	coordinatorNode, coordinatorError := startElasticsearch(
-		ctx,
+		context.Background(),
 		options.KibanaDirectory,
 		sessionDirectory,
 		scenario.CoordinatorTarget,
@@ -160,12 +237,25 @@ func (environment *Environment) build(
 			coordinatorHTTPPort,
 			coordinatorTransportPort,
 		),
-		options.ReportProgress,
 	)
 	if coordinatorError != nil {
 		return coordinatorError
 	}
 	environment.coordinatorNode = coordinatorNode
+	environment.monitorProcess(
+		"coordinator Elasticsearch",
+		coordinatorNode.LogPath(),
+		coordinatorNode.Done(),
+		coordinatorNode.Wait,
+	)
+	if readinessError := waitForElasticsearch(
+		ctx,
+		coordinatorNode,
+		scenario.CoordinatorTarget,
+		options.ReportProgress,
+	); readinessError != nil {
+		return readinessError
+	}
 
 	if hasRemote {
 		connectionError := connectRemoteAliases(
@@ -224,71 +314,111 @@ func nodeOptions(
 // death is reported rather than ignored, because an environment missing one of its
 // processes can no longer represent the scenario it claims to.
 func (environment *Environment) Wait(ctx context.Context) error {
-	var remoteExited <-chan error
-	if environment.remoteNode != nil {
-		remoteExited = environment.remoteNode.Exited()
+	select {
+	case <-environment.failureDone:
+		return environment.failureError
+	default:
 	}
 
 	select {
 	case <-ctx.Done():
-		return nil
-	case processError := <-environment.toxiproxyServer.Exited():
-		return unexpectedExit(ctx, "Toxiproxy", environment.toxiproxyLog, processError)
-	case processError := <-remoteExited:
-		return unexpectedExit(
-			ctx,
-			"remote Elasticsearch",
-			environment.remoteNode.LogPath(),
-			processError,
-		)
-	case processError := <-environment.coordinatorNode.Exited():
-		return unexpectedExit(
-			ctx,
-			"coordinator Elasticsearch",
-			environment.coordinatorNode.LogPath(),
-			processError,
-		)
+		select {
+		case <-environment.failureDone:
+			return environment.failureError
+		default:
+			return nil
+		}
+	case <-environment.failureDone:
+		return environment.failureError
 	}
 }
 
-// unexpectedExit distinguishes a process that died on its own from one that exited
-// because the caller had already asked the environment to stop.
-func unexpectedExit(
-	ctx context.Context,
+// monitorProcess turns the first child death into one cached environment failure.
+// It starts as soon as each child is launched, so fixture creation and all other
+// build steps are supervised as well as the final interactive wait.
+func (environment *Environment) monitorProcess(
 	component string,
 	logPath string,
-	processError error,
-) error {
-	if ctx.Err() != nil {
-		return nil
-	}
+	done <-chan struct{},
+	wait func() error,
+) {
+	go func() {
+		select {
+		case <-environment.stopping:
+			return
+		case <-done:
+		}
 
-	return &UnexpectedExitError{Component: component, LogPath: logPath, Err: processError}
+		select {
+		case <-environment.stopping:
+			return
+		default:
+		}
+
+		exitError := &UnexpectedExitError{
+			Component: component,
+			LogPath:   logPath,
+			Err:       wait(),
+		}
+		environment.failureOnce.Do(func() {
+			environment.failureError = exitError
+			close(environment.failureDone)
+			environment.buildCancel(exitError)
+		})
+	}()
 }
 
 // Stop tears the environment down. Elasticsearch goes first and Toxiproxy last, so
 // that no cluster is left addressing a proxy that has already gone. Every failure is
 // reported rather than the first one stopping the rest.
 func (environment *Environment) Stop() error {
-	var stopErrors []error
+	environment.stopOnce.Do(func() {
+		close(environment.stopping)
+		environment.buildCancel(context.Canceled)
 
-	if environment.coordinatorNode != nil {
-		if stopError := environment.coordinatorNode.Stop(); stopError != nil {
-			stopErrors = append(stopErrors, fmt.Errorf("stop coordinator Elasticsearch: %w", stopError))
+		var stopErrors []error
+
+		if environment.coordinatorNode != nil {
+			if stopError := environment.coordinatorNode.Stop(); stopError != nil {
+				stopErrors = append(stopErrors, fmt.Errorf("stop coordinator Elasticsearch: %w", stopError))
+			}
 		}
+
+		if environment.remoteNode != nil {
+			if stopError := environment.remoteNode.Stop(); stopError != nil {
+				stopErrors = append(stopErrors, fmt.Errorf("stop remote Elasticsearch: %w", stopError))
+			}
+		}
+
+		if environment.toxiproxyServer != nil {
+			if stopError := environment.toxiproxyServer.Stop(); stopError != nil {
+				stopErrors = append(stopErrors, fmt.Errorf("stop Toxiproxy: %w", stopError))
+			}
+		}
+
+		if len(stopErrors) == 0 {
+			if cleanupError := cleanupSessionElasticsearch(environment.sessionDirectory); cleanupError != nil {
+				stopErrors = append(stopErrors, cleanupError)
+			}
+		}
+
+		environment.stopError = errors.Join(stopErrors...)
+	})
+
+	return environment.stopError
+}
+
+// cleanupSessionElasticsearch removes only the large per-run installation, data,
+// and internal logs. Operator-facing logs live beside it and remain available.
+func cleanupSessionElasticsearch(sessionDirectory string) error {
+	elasticsearchDirectory := filepath.Join(sessionDirectory, "elasticsearch")
+	if removeError := os.RemoveAll(elasticsearchDirectory); removeError != nil {
+		return fmt.Errorf(
+			"remove Elasticsearch runtime %q: %w",
+			elasticsearchDirectory,
+			removeError,
+		)
 	}
 
-	if environment.remoteNode != nil {
-		if stopError := environment.remoteNode.Stop(); stopError != nil {
-			stopErrors = append(stopErrors, fmt.Errorf("stop remote Elasticsearch: %w", stopError))
-		}
-	}
-
-	if environment.toxiproxyServer != nil {
-		if stopError := environment.toxiproxyServer.Stop(); stopError != nil {
-			stopErrors = append(stopErrors, fmt.Errorf("stop Toxiproxy: %w", stopError))
-		}
-	}
-
-	return errors.Join(stopErrors...)
+	return nil
 }

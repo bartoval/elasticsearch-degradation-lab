@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/bartoval/elasticsearch-degradation-lab/internal/elasticsearch"
 	"github.com/bartoval/elasticsearch-degradation-lab/internal/scenario"
@@ -24,13 +26,21 @@ func startToxiproxy(
 
 	reportProgress("Starting Toxiproxy")
 
-	server, startError := toxiproxy.Start(ctx, binaryPath, logPath)
+	server, startError := toxiproxy.Start(context.Background(), binaryPath, logPath)
 	if startError != nil {
 		return nil, fmt.Errorf("start Toxiproxy: %w", startError)
 	}
 
 	if readinessError := server.WaitUntilReady(ctx); readinessError != nil {
-		_ = server.Stop()
+		if stopError := server.Stop(); stopError != nil {
+			return nil, errors.Join(
+				fmt.Errorf("start Toxiproxy: %v\nFull log: %s", readinessError, logPath),
+				fmt.Errorf("cleanup Toxiproxy: %w", stopError),
+			)
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 
 		return nil, fmt.Errorf("start Toxiproxy: %w\nFull log: %s", readinessError, logPath)
 	}
@@ -155,24 +165,15 @@ func connectRemoteAliases(
 	return nil
 }
 
-// startElasticsearch gives both local clusters identical progress and error handling.
+// startElasticsearch gives both local clusters identical launch handling. Readiness
+// is separate so the environment can register supervision before it begins.
 func startElasticsearch(
 	ctx context.Context,
 	kibanaDirectory string,
 	sessionDirectory string,
 	role string,
 	options elasticsearch.Options,
-	reportProgress func(string),
 ) (*elasticsearch.Node, error) {
-	reportProgress(
-		fmt.Sprintf(
-			"Starting %s Elasticsearch (HTTP %d, transport %d)",
-			role,
-			options.HTTPPort,
-			options.TransportPort,
-		),
-	)
-
 	node, startError := elasticsearch.Start(
 		ctx,
 		kibanaDirectory,
@@ -183,23 +184,22 @@ func startElasticsearch(
 		return nil, fmt.Errorf("start %s Elasticsearch: %w", role, startError)
 	}
 
+	return node, nil
+}
+
+func waitForElasticsearch(
+	ctx context.Context,
+	node *elasticsearch.Node,
+	role string,
+	reportProgress func(string),
+) error {
 	reportProgress(fmt.Sprintf("%s Elasticsearch log: %s", role, node.LogPath()))
 
 	if readinessError := node.WaitUntilReady(ctx, reportProgress); readinessError != nil {
-		stopError := node.Stop()
-		if stopError != nil {
-			return nil, fmt.Errorf(
-				"wait for %s Elasticsearch: %w; cleanup failed: %v",
-				role,
-				readinessError,
-				stopError,
-			)
-		}
-
-		return nil, fmt.Errorf("wait for %s Elasticsearch: %w", role, readinessError)
+		return fmt.Errorf("wait for %s Elasticsearch: %w", role, readinessError)
 	}
 
-	return node, nil
+	return nil
 }
 
 // applyFixtures sends each data preset to the target selected by the scenario.
@@ -230,6 +230,20 @@ func applyFixtures(
 		case scenario.FixturePresetMinimalLookup:
 			fixtureError = targetNode.ApplyMinimalLookup(ctx, fixture.Name)
 		case scenario.FixturePresetBulkDocuments:
+			var timeRange time.Duration
+			if fixture.TimeRange != "" {
+				parsedTimeRange, parseError := time.ParseDuration(fixture.TimeRange)
+				if parseError != nil {
+					return fmt.Errorf(
+						"parse fixture %s time range %q: %w",
+						fixture.Name,
+						fixture.TimeRange,
+						parseError,
+					)
+				}
+				timeRange = parsedTimeRange
+			}
+
 			fixtureError = targetNode.ApplyBulkDocuments(
 				ctx,
 				fixture.Name,
@@ -237,6 +251,7 @@ func applyFixtures(
 					Count:             fixture.Documents,
 					FieldsPerDocument: fixture.FieldsPerDocument,
 					MessageBytes:      fixture.MessageBytes,
+					TimeRange:         timeRange,
 				},
 				reportProgress,
 			)
@@ -278,13 +293,19 @@ func fixtureDescription(fixture scenario.Fixture) string {
 			fixture.FieldsPerStream,
 		)
 	case scenario.FixturePresetBulkDocuments:
+		timeRange := "one-second timestamp spacing"
+		if fixture.TimeRange != "" {
+			timeRange = fixture.TimeRange + " time range"
+		}
+
 		return fmt.Sprintf(
-			"Applying fixture %s to %s (%d documents, %d extra fields, %d-byte messages)",
+			"Applying fixture %s to %s (%d documents, %d extra fields, %d-byte messages, %s)",
 			fixture.Preset,
 			fixture.Target,
 			fixture.Documents,
 			fixture.FieldsPerDocument,
 			fixture.MessageBytes,
+			timeRange,
 		)
 	default:
 		return fmt.Sprintf("Applying fixture %s to %s", fixture.Preset, fixture.Target)

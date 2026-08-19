@@ -2,9 +2,9 @@ package scenario
 
 import (
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strconv"
+	"time"
 )
 
 const (
@@ -132,6 +132,9 @@ type Fixture struct {
 	// returning many narrow rows costs far less than one returning few wide ones.
 	FieldsPerDocument int `yaml:"fieldsPerDocument"`
 	MessageBytes      int `yaml:"messageBytes"`
+	// TimeRange optionally spreads bulk documents from now backwards across a
+	// duration such as "24h". Empty preserves the historical one-second spacing.
+	TimeRange string `yaml:"timeRange"`
 }
 
 // Fault describes a network degradation applied to a scenario target.
@@ -166,8 +169,8 @@ func (scenarioConfig Scenario) Validate() error {
 		return fmt.Errorf("id is required")
 	}
 
-	if !isSafeIdentifier(scenarioConfig.ID) {
-		return fmt.Errorf("id cannot contain a path")
+	if !scenarioIDPattern.MatchString(scenarioConfig.ID) {
+		return fmt.Errorf("id can contain only lowercase letters, numbers, and single underscores")
 	}
 
 	if scenarioConfig.Name == "" {
@@ -198,19 +201,41 @@ func (scenarioConfig Scenario) Validate() error {
 // the failure would appear far from the line that caused it.
 var runnerOwnedSettings = map[string]bool{
 	"cluster.name":                         true,
+	"cluster.initial_master_nodes":         true,
+	"cluster.max_shards_per_node":          true,
 	"node.name":                            true,
+	"node.roles":                           true,
 	"network.host":                         true,
+	"network.bind_host":                    true,
+	"network.publish_host":                 true,
 	"discovery.type":                       true,
+	"discovery.seed_hosts":                 true,
 	"http.port":                            true,
+	"http.host":                            true,
+	"http.bind_host":                       true,
+	"http.publish_host":                    true,
+	"http.publish_port":                    true,
 	"transport.port":                       true,
+	"transport.host":                       true,
+	"transport.bind_host":                  true,
+	"transport.publish_host":               true,
+	"transport.publish_port":               true,
+	"path.home":                            true,
 	"path.data":                            true,
 	"path.logs":                            true,
+	"xpack.security.enabled":               true,
+	"xpack.security.http.ssl.enabled":      true,
 	"xpack.security.transport.ssl.enabled": true,
-	"cluster.max_shards_per_node":          true,
 }
 
 // heapPattern accepts the sizes Elasticsearch accepts for -Xms and -Xmx.
-var heapPattern = regexp.MustCompile(`^[1-9][0-9]*[mgMG]$`)
+var (
+	heapPattern         = regexp.MustCompile(`^[1-9][0-9]*[mgMG]$`)
+	scenarioIDPattern   = regexp.MustCompile(`^[a-z0-9]+(?:_[a-z0-9]+)*$`)
+	identifierPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	resourceNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+	settingNamePattern  = regexp.MustCompile(`^[a-z][a-z0-9_.-]*$`)
+)
 
 // validateElasticsearch rejects tuning that the runner cannot honour, so that a
 // scenario never claims a limit it did not actually get.
@@ -223,8 +248,11 @@ func validateElasticsearch(elasticsearchConfig Elasticsearch) error {
 	}
 
 	for name, value := range elasticsearchConfig.Settings {
-		if name == "" {
-			return fmt.Errorf("elasticsearch.settings has an empty name")
+		if !settingNamePattern.MatchString(name) {
+			return fmt.Errorf(
+				"elasticsearch.settings name %q can contain only lowercase letters, numbers, dots, underscores, and hyphens",
+				name,
+			)
 		}
 
 		if runnerOwnedSettings[name] {
@@ -271,8 +299,11 @@ func validateRemotes(remotes []Remote) (map[string]bool, error) {
 			)
 		}
 
-		if !isSafeIdentifier(remote.ID) {
-			return nil, fmt.Errorf("topology.remotes[%d].id cannot contain a path", remoteIndex)
+		if !identifierPattern.MatchString(remote.ID) {
+			return nil, fmt.Errorf(
+				"topology.remotes[%d].id can contain only lowercase letters, numbers, hyphens, and underscores",
+				remoteIndex,
+			)
 		}
 
 		if remote.ID == CoordinatorTarget {
@@ -283,9 +314,9 @@ func validateRemotes(remotes []Remote) (map[string]bool, error) {
 			)
 		}
 
-		if !isValidRemoteAlias(remote.Alias) {
+		if !identifierPattern.MatchString(remote.Alias) {
 			return nil, fmt.Errorf(
-				"topology.remotes[%d].alias can contain only letters, numbers, hyphens, and underscores",
+				"topology.remotes[%d].alias can contain only lowercase letters, numbers, hyphens, and underscores",
 				remoteIndex,
 			)
 		}
@@ -320,8 +351,11 @@ func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
 			return fmt.Errorf("fixtures[%d].name is required", fixtureIndex)
 		}
 
-		if !isSafeIdentifier(fixture.Name) {
-			return fmt.Errorf("fixtures[%d].name cannot contain a path", fixtureIndex)
+		if !resourceNamePattern.MatchString(fixture.Name) || len(fixture.Name) > 255 {
+			return fmt.Errorf(
+				"fixtures[%d].name must be a lowercase Elasticsearch name up to 255 characters",
+				fixtureIndex,
+			)
 		}
 
 		presetIsSupported := fixture.Preset == FixturePresetMinimalLogs ||
@@ -349,7 +383,8 @@ func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
 func validateFixtureKnobs(fixtureIndex int, fixture Fixture) error {
 	switch fixture.Preset {
 	case FixturePresetBulkLogs:
-		if fixture.Documents != 0 || fixture.FieldsPerDocument != 0 || fixture.MessageBytes != 0 {
+		if fixture.Documents != 0 || fixture.FieldsPerDocument != 0 ||
+			fixture.MessageBytes != 0 || fixture.TimeRange != "" {
 			return fmt.Errorf(
 				"fixtures[%d] document sizing applies to preset %q only",
 				fixtureIndex,
@@ -396,11 +431,23 @@ func validateFixtureKnobs(fixtureIndex int, fixture Fixture) error {
 			)
 		}
 
+		if fixture.TimeRange != "" {
+			timeRange, parseError := time.ParseDuration(fixture.TimeRange)
+			if parseError != nil || timeRange <= 0 {
+				return fmt.Errorf(
+					"fixtures[%d].timeRange %q must be a positive duration such as 24h",
+					fixtureIndex,
+					fixture.TimeRange,
+				)
+			}
+		}
+
 		return nil
 	default:
 
 		if fixture.DataStreams != 0 || fixture.FieldsPerStream != 0 ||
-			fixture.Documents != 0 || fixture.FieldsPerDocument != 0 || fixture.MessageBytes != 0 {
+			fixture.Documents != 0 || fixture.FieldsPerDocument != 0 ||
+			fixture.MessageBytes != 0 || fixture.TimeRange != "" {
 			return fmt.Errorf(
 				"fixtures[%d] sizing applies to the bulk presets only",
 				fixtureIndex,
@@ -425,6 +472,12 @@ func validateFaults(faults []Fault, remotes []Remote, targets map[string]bool) e
 	for faultIndex, fault := range faults {
 		if fault.ID == "" {
 			return fmt.Errorf("faults[%d].id is required", faultIndex)
+		}
+		if !identifierPattern.MatchString(fault.ID) {
+			return fmt.Errorf(
+				"faults[%d].id can contain only lowercase letters, numbers, hyphens, and underscores",
+				faultIndex,
+			)
 		}
 
 		if faultIDs[fault.ID] {
@@ -533,27 +586,4 @@ func validateBulkLogs(fixtureIndex int, fixture Fixture) error {
 	}
 
 	return nil
-}
-
-// isSafeIdentifier protects runtime paths without restricting ordinary scenario names.
-func isSafeIdentifier(identifier string) bool {
-	identifierIsPath := filepath.Base(identifier) != identifier
-
-	return !identifierIsPath && identifier != "." && identifier != ".."
-}
-
-// isValidRemoteAlias keeps the alias safe for Elasticsearch cluster setting keys.
-func isValidRemoteAlias(alias string) bool {
-	for _, character := range alias {
-		characterIsLetter := character >= 'a' && character <= 'z' ||
-			character >= 'A' && character <= 'Z'
-		characterIsNumber := character >= '0' && character <= '9'
-		characterIsSeparator := character == '-' || character == '_'
-
-		if !characterIsLetter && !characterIsNumber && !characterIsSeparator {
-			return false
-		}
-	}
-
-	return true
 }

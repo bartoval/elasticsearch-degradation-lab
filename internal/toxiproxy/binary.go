@@ -171,6 +171,8 @@ func downloadReleaseAsset(ctx context.Context, asset releaseAsset) ([]byte, erro
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, response.Body)
+
 		return nil, fmt.Errorf("download Toxiproxy: HTTP %d", response.StatusCode)
 	}
 

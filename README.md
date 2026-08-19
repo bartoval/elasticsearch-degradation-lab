@@ -75,7 +75,9 @@ When Kibana and the scenario are ready, open your local Kibana instance and repr
 the behavior.
 
 Press `Ctrl+C` in the runner terminal to stop Elasticsearch and Toxiproxy. Stop Kibana
-separately.
+separately. A clean shutdown removes the per-scenario Elasticsearch installation,
+data, and internal logs; the operator-facing files under `.runtime/<id>/logs/` and
+the shared Toxiproxy cache under `.runtime/tools/` are preserved.
 
 When they are not already cached, the runner downloads Toxiproxy and Kibana's
 matching Elasticsearch snapshot. Later runs reuse both caches.
@@ -100,6 +102,10 @@ Kibana can receive the faults declared by the scenario. A custom
 
 The applicable ports must be free before startup. A coordinator-only scenario uses
 9200, 9210, 9300, and 8474; scenarios with a remote also use the remaining ports.
+
+The proxy counters cover traffic between Kibana and Elasticsearch (and CCS
+transport traffic for alias proxies). They do not measure Kibana-to-browser bytes;
+use browser network instrumentation for that leg.
 
 The two doors differ only in whether the coordinator's own proxy is crossed. A fault
 on a remote sits *behind* the coordinator, so a cross-cluster request pays it either
@@ -233,7 +239,15 @@ fixtures:
     preset: bulk_documents
     name: logstash-degradation
     documents: 500000
+    fieldsPerDocument: 86
+    messageBytes: 5370
+    timeRange: 24h
 ```
+
+`timeRange` is optional and distributes the generated timestamps uniformly from
+fixture creation backwards across that duration. Without it, documents retain the
+original one-second spacing. `fieldsPerDocument` counts generated fields in addition
+to the fixed timestamp, message, sequence, service, and level fields.
 
 Each preset accepts only the sizing it reads. Asking `bulk_logs` for `documents`, or
 `bulk_documents` for `dataStreams`, is rejected, because a number that was declared

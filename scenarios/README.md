@@ -1,12 +1,14 @@
 # Scenario catalog
 
-Each YAML file describes an **infrastructure profile**: topology, fixtures, and
-network faults. One profile can support many Kibana workflows — pick a row below,
-run the profile, then exercise any listed use case.
+Each YAML file contains exactly one **infrastructure profile**: topology, fixtures,
+and network faults. One profile can support many Kibana workflows — pick a row
+below, run the profile, then exercise any listed use case.
 
 File names follow `<topology>__<degradation>[__<fixture>].yml`. A degradation can
 be a network fault or a deliberately large fixture. The `id` inside the file uses
 single underscores (used for `.runtime/<id>/`).
+The runner enforces this relationship: the `id` must equal the filename stem with
+each `__` replaced by `_`.
 
 ## Naming
 

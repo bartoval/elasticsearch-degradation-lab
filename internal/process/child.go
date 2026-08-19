@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -39,67 +40,163 @@ type Spec struct {
 
 // Child is a started program whose exit the caller can observe and cause.
 type Child struct {
-	cancel context.CancelFunc
-	done   chan error
+	process       *os.Process
+	processGroup  bool
+	shutdownGrace time.Duration
+	done          chan struct{}
+	waitError     error
+	stopOnce      sync.Once
+	stopError     error
 }
 
 // Start launches the program and returns once it has been spawned, without waiting
 // for it to become useful: readiness is the caller's own question to ask.
 func Start(ctx context.Context, spec Spec) (*Child, error) {
-	processContext, cancelProcess := context.WithCancel(ctx)
-	command := exec.CommandContext(processContext, spec.Path, spec.Arguments...)
+	if contextError := ctx.Err(); contextError != nil {
+		return nil, contextError
+	}
+
+	command := exec.Command(spec.Path, spec.Arguments...)
 	command.Dir = spec.Directory
 	command.Env = spec.Environment
 	command.Stdout = spec.Output
 	command.Stderr = spec.Output
-	command.WaitDelay = spec.ShutdownGrace
 
 	if spec.ProcessGroup {
 		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
 
-	command.Cancel = func() error {
-		return terminate(command.Process, spec.ProcessGroup)
-	}
-
 	if startError := command.Start(); startError != nil {
-		cancelProcess()
-
 		return nil, startError
 	}
 
 	child := &Child{
-		cancel: cancelProcess,
-		done:   make(chan error, 1),
+		process:       command.Process,
+		processGroup:  spec.ProcessGroup,
+		shutdownGrace: spec.ShutdownGrace,
+		done:          make(chan struct{}),
 	}
 
 	go func() {
-		child.done <- command.Wait()
+		child.waitError = command.Wait()
 		close(child.done)
+	}()
+
+	// A caller may still choose context ownership for a standalone child. The
+	// runner itself uses an independent context and performs its ordered teardown
+	// explicitly, so cancellation cannot stop all of its processes at once.
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = child.Stop()
+		case <-child.done:
+		}
 	}()
 
 	return child, nil
 }
 
-// Exited reports the program's exit. Reading from it is how a caller learns that a
-// process died on its own rather than because it was asked to.
-func (child *Child) Exited() <-chan error {
+// Done is closed when the program exits. Unlike a channel carrying one error, a
+// closed signal broadcasts the outcome to every observer without consuming it.
+func (child *Child) Done() <-chan struct{} {
 	return child.done
 }
 
-// Stop asks the program to exit and waits for it. It is safe to call more than
-// once, so a caller may stop explicitly without unbalancing a deferred stop.
-func (child *Child) Stop() error {
-	child.cancel()
+// Wait returns the cached process outcome to any number of callers.
+func (child *Child) Wait() error {
+	<-child.done
 
-	return <-child.done
+	return child.waitError
 }
 
-// terminate asks a process, or its whole group, to exit. A process that is already
-// gone is the outcome that was wanted, not a failure.
-func terminate(started *os.Process, processGroup bool) error {
+// Stop asks the program to exit and waits for it. A process exit status caused by
+// the requested signal is expected; only failures to control the process are
+// returned. Repeated and concurrent calls receive the same result.
+func (child *Child) Stop() error {
+	child.stopOnce.Do(func() {
+		child.stopError = child.stop()
+	})
+
+	return child.stopError
+}
+
+func (child *Child) stop() error {
+	if child.targetExited() {
+		<-child.done
+
+		return nil
+	}
+
+	terminateError := sendSignal(child.process, child.processGroup, syscall.SIGTERM)
+	if terminateError != nil {
+		terminateError = fmt.Errorf("terminate process: %w", terminateError)
+	}
+
+	if child.waitForTargetExit(child.shutdownGrace) {
+		return terminateError
+	}
+
+	killError := sendSignal(child.process, child.processGroup, syscall.SIGKILL)
+	if killError != nil {
+		killError = fmt.Errorf("kill process after %s grace: %w", child.shutdownGrace, killError)
+	}
+
+	if !child.waitForTargetExit(child.shutdownGrace) {
+		killError = errors.Join(
+			killError,
+			fmt.Errorf("process target still exists after SIGKILL"),
+		)
+	}
+
+	return errors.Join(terminateError, killError)
+}
+
+func (child *Child) targetExited() bool {
+	if !child.processGroup {
+		select {
+		case <-child.done:
+			return true
+		default:
+			return false
+		}
+	}
+
+	groupError := syscall.Kill(-child.process.Pid, 0)
+
+	return errors.Is(groupError, syscall.ESRCH)
+}
+
+func (child *Child) waitForTargetExit(timeout time.Duration) bool {
+	if child.targetExited() {
+		<-child.done
+
+		return true
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+			if child.targetExited() {
+				<-child.done
+
+				return true
+			}
+		}
+	}
+}
+
+// signal reaches either one process or its whole group. A process that is already
+// gone is the outcome Stop wanted, not a failure.
+func sendSignal(started *os.Process, processGroup bool, requested os.Signal) error {
 	if !processGroup {
-		signalError := started.Signal(syscall.SIGTERM)
+		signalError := started.Signal(requested)
 		if errors.Is(signalError, os.ErrProcessDone) {
 			return nil
 		}
@@ -107,7 +204,12 @@ func terminate(started *os.Process, processGroup bool) error {
 		return signalError
 	}
 
-	signalError := syscall.Kill(-started.Pid, syscall.SIGTERM)
+	unixSignal, validSignal := requested.(syscall.Signal)
+	if !validSignal {
+		return fmt.Errorf("unsupported process-group signal %T", requested)
+	}
+
+	signalError := syscall.Kill(-started.Pid, unixSignal)
 	if errors.Is(signalError, syscall.ESRCH) {
 		return nil
 	}

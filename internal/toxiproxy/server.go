@@ -84,7 +84,8 @@ func (server *Server) WaitUntilReady(ctx context.Context) error {
 		}
 
 		select {
-		case waitError := <-server.child.Exited():
+		case <-server.child.Done():
+			waitError := server.child.Wait()
 			if waitError != nil {
 				return fmt.Errorf("Toxiproxy exited before becoming ready: %w", waitError)
 			}
@@ -97,9 +98,14 @@ func (server *Server) WaitUntilReady(ctx context.Context) error {
 	}
 }
 
-// Exited reports an unexpected Toxiproxy exit while the scenario is active.
-func (server *Server) Exited() <-chan error {
-	return server.child.Exited()
+// Done is closed when Toxiproxy exits.
+func (server *Server) Done() <-chan struct{} {
+	return server.child.Done()
+}
+
+// Wait returns Toxiproxy's cached exit outcome.
+func (server *Server) Wait() error {
+	return server.child.Wait()
 }
 
 // Stop asks Toxiproxy to exit and waits for it to release its port.

@@ -171,7 +171,6 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 	if startError != nil {
 		return reportStartupFailure(runContext, startError)
 	}
-	defer reportStopFailure(environment.Stop)
 
 	announceReady(loadedScenario.Name)
 
@@ -181,13 +180,19 @@ func runUpCommand(scenarioPath string, configuredKibanaDirectory string) int {
 	// teardown that follows turns out to be slow.
 	stopSignals()
 
+	fmt.Fprintln(os.Stdout, "\n[progress] Stopping scenario infrastructure")
+	stopError := environment.Stop()
+
+	exitCode := exitSuccess
 	if waitError != nil {
-		return reportUnexpectedExit(waitError)
+		exitCode = reportUnexpectedExit(waitError)
+	}
+	if stopError != nil {
+		fmt.Fprintf(os.Stderr, "scenario cleanup failed: %v\n", stopError)
+		exitCode = exitFailure
 	}
 
-	fmt.Fprintln(os.Stdout, "\n[progress] Stopping scenario infrastructure")
-
-	return exitSuccess
+	return exitCode
 }
 
 // announceReady tells the operator the environment is theirs to drive.
@@ -200,7 +205,7 @@ func announceReady(scenarioName string) {
 
 // reportStartupFailure treats user cancellation consistently throughout scenario preparation.
 func reportStartupFailure(ctx context.Context, startupError error) int {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && startupError == ctx.Err() {
 		fmt.Fprintln(os.Stdout, "Scenario startup cancelled.")
 
 		return exitSuccess
@@ -222,11 +227,4 @@ func reportUnexpectedExit(waitError error) int {
 	}
 
 	return exitFailure
-}
-
-// reportStopFailure keeps cleanup problems visible without hiding the original result.
-func reportStopFailure(stop func() error) {
-	if stopError := stop(); stopError != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", stopError)
-	}
 }

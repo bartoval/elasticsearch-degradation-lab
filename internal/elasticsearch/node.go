@@ -2,7 +2,9 @@ package elasticsearch
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -199,11 +201,11 @@ func (node *Node) WaitUntilReady(ctx context.Context, reportProgress func(string
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case processError := <-node.child.Exited():
+		case <-node.child.Done():
 			return fmt.Errorf(
 				"Elasticsearch %s exited before becoming ready: %v\nRecent log:\n%s\nFull log: %s",
 				node.id,
-				processError,
+				node.child.Wait(),
 				recentLog(node.logPath),
 				node.logPath,
 			)
@@ -234,20 +236,22 @@ func (node *Node) LogPath() string {
 	return node.logPath
 }
 
-// Exited reports an unexpected launcher exit while the scenario is active.
-func (node *Node) Exited() <-chan error {
-	return node.child.Exited()
+// Done is closed when the launcher exits.
+func (node *Node) Done() <-chan struct{} {
+	return node.child.Done()
+}
+
+// Wait returns the launcher's cached exit outcome.
+func (node *Node) Wait() error {
+	return node.child.Wait()
 }
 
 // Stop terminates the launcher and waits until Elasticsearch releases its ports.
 func (node *Node) Stop() error {
-	// The exit status is discarded on purpose: a process that was asked to stop
-	// reports having been signalled, which is the outcome that was wanted. What can
-	// still go wrong is the JVM below the launcher outliving it, so the ports are
-	// what gets waited on.
-	_ = node.child.Stop()
+	controlError := node.child.Stop()
+	portsError := waitForPortsAvailable(node.httpPort, node.transportPort)
 
-	return waitForPortsAvailable(node.httpPort, node.transportPort)
+	return errors.Join(controlError, portsError)
 }
 
 // isReady uses the same authenticated cluster-health signal as the JavaScript prototype.
@@ -269,6 +273,10 @@ func (node *Node) isReady(ctx context.Context) (bool, error) {
 		return false, responseError
 	}
 	defer response.Body.Close()
+	_, drainError := io.Copy(io.Discard, response.Body)
+	if drainError != nil {
+		return false, fmt.Errorf("read cluster health response: %w", drainError)
+	}
 
 	if response.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("cluster health returned %s", response.Status)
@@ -413,6 +421,8 @@ func snapshotArguments(
 		"--base-path",
 		nodeDirectory,
 		"--use-cached",
+		"--ready-timeout",
+		"10m",
 		"-E", "cluster.name=degradation-" + options.ID,
 		"-E", "node.name=" + options.ID,
 		"-E", "network.host=" + localHost,

@@ -2,6 +2,7 @@ package elasticsearch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -168,6 +169,10 @@ func bulkLogsTemplate(namePrefix string) map[string]any {
 // than one of narrow rows.
 const bulkRequestTargetBytes = 8 * 1024 * 1024
 
+// maxBulkFailureDetails keeps a broken large fixture actionable without printing
+// hundreds of thousands of near-identical item failures.
+const maxBulkFailureDetails = 5
+
 // defaultMessageBytes is roughly the length of an ordinary log line, used when a
 // scenario does not say how heavy a row should be.
 const defaultMessageBytes = 48
@@ -180,6 +185,19 @@ type DocumentShape struct {
 	Count             int
 	FieldsPerDocument int
 	MessageBytes      int
+	TimeRange         time.Duration
+}
+
+type bulkResponse struct {
+	Errors bool                        `json:"errors"`
+	Items  []map[string]bulkItemResult `json:"items"`
+}
+
+type bulkItemResult struct {
+	Index  string          `json:"_index"`
+	ID     string          `json:"_id"`
+	Status int             `json:"status"`
+	Error  json.RawMessage `json:"error"`
 }
 
 // withDefaults fills the sizes a scenario left unset, so that the preset stays
@@ -212,10 +230,9 @@ func (shape DocumentShape) batchSize() int {
 // deliberately indexes nothing, because index resolution and field capabilities read
 // mappings alone.
 //
-// Timestamps walk backwards one second at a time from the moment the fixture runs,
-// so a run is reproducible and a time range selects a predictable number of rows.
-// A large fixture therefore reaches days into the past, and a client whose default
-// time range is minutes will show nothing until it is widened.
+// Timestamps use either the explicit TimeRange or the historical one-second spacing
+// backwards from fixture creation, so a client time picker selects a predictable
+// number of rows.
 func (node *Node) ApplyBulkDocuments(
 	ctx context.Context,
 	indexName string,
@@ -242,14 +259,18 @@ func (node *Node) ApplyBulkDocuments(
 	for indexed := 0; indexed < shape.Count; indexed += batchSize {
 		batch := min(batchSize, shape.Count-indexed)
 
+		var response bulkResponse
 		bulkError := node.requestNDJSON(
 			ctx,
 			"/"+indexName+"/_bulk",
 			bulkDocumentBody(indexed, batch, indexedAt, shape),
-			nil,
+			&response,
 		)
 		if bulkError != nil {
 			return fmt.Errorf("index documents %d-%d: %w", indexed, indexed+batch, bulkError)
+		}
+		if itemError := response.itemError(); itemError != nil {
+			return fmt.Errorf("index documents %d-%d: %w", indexed, indexed+batch, itemError)
 		}
 
 		if time.Since(reportedAt) >= progressInterval {
@@ -319,7 +340,7 @@ func bulkDocumentBody(
 		body.WriteString("{\"index\":{}}\n")
 		body.WriteString(fmt.Sprintf(
 			`{"@timestamp":%q,"message":%q,"sequence":%d,"service":%q,"level":%q`,
-			indexedAt.Add(-time.Duration(sequence)*time.Second).Format(time.RFC3339Nano),
+			documentTimestamp(indexedAt, sequence, shape).Format(time.RFC3339Nano),
 			messageOfLength(sequence, shape.MessageBytes),
 			sequence,
 			services[sequence%len(services)],
@@ -339,6 +360,109 @@ func bulkDocumentBody(
 	}
 
 	return []byte(body.String())
+}
+
+// documentTimestamp keeps the historical one-second spacing unless a scenario
+// asks for an explicit range. Explicit ranges include both endpoints so a count of
+// 500k over 24h has the same intent as makelogs --days 1/0.
+func documentTimestamp(indexedAt time.Time, sequence int, shape DocumentShape) time.Time {
+	if shape.TimeRange <= 0 {
+		return indexedAt.Add(-time.Duration(sequence) * time.Second)
+	}
+
+	if shape.Count <= 1 {
+		return indexedAt
+	}
+
+	denominator := time.Duration(shape.Count - 1)
+	sequenceDuration := time.Duration(sequence)
+	wholeStep := shape.TimeRange / denominator
+	remainder := shape.TimeRange % denominator
+	elapsed := wholeStep*sequenceDuration + remainder*sequenceDuration/denominator
+
+	return indexedAt.Add(-elapsed)
+}
+
+func (response bulkResponse) itemError() error {
+	failureCount := 0
+	failureDetails := make([]string, 0, maxBulkFailureDetails)
+	operations := [...]string{"index", "create", "update", "delete"}
+
+	for _, item := range response.Items {
+		for _, operation := range operations {
+			result, exists := item[operation]
+			if !exists || (result.Status < http.StatusMultipleChoices && !hasBulkItemError(result.Error)) {
+				continue
+			}
+
+			failureCount++
+			if len(failureDetails) < maxBulkFailureDetails {
+				failureDetails = append(
+					failureDetails,
+					formatBulkItemFailure(operation, result),
+				)
+			}
+		}
+	}
+
+	if failureCount == 0 {
+		if response.Errors {
+			return fmt.Errorf("Elasticsearch _bulk reported item failures without details")
+		}
+
+		return nil
+	}
+
+	detail := strings.Join(failureDetails, "; ")
+	if omitted := failureCount - len(failureDetails); omitted > 0 {
+		detail += fmt.Sprintf("; and %d more", omitted)
+	}
+
+	return fmt.Errorf("Elasticsearch _bulk reported %d item failure(s): %s", failureCount, detail)
+}
+
+func hasBulkItemError(rawError json.RawMessage) bool {
+	return len(rawError) > 0 && string(rawError) != "null"
+}
+
+func formatBulkItemFailure(operation string, result bulkItemResult) string {
+	target := result.Index
+	if result.ID != "" {
+		target += "/" + result.ID
+	}
+
+	reason := bulkItemFailureReason(result.Error)
+	if reason == "" {
+		return fmt.Sprintf("%s %s returned status %d", operation, target, result.Status)
+	}
+
+	return fmt.Sprintf("%s %s returned status %d: %s", operation, target, result.Status, reason)
+}
+
+func bulkItemFailureReason(rawError json.RawMessage) string {
+	if len(rawError) == 0 || string(rawError) == "null" {
+		return ""
+	}
+
+	var structured struct {
+		Type   string `json:"type"`
+		Reason string `json:"reason"`
+	}
+	if decodeError := json.Unmarshal(rawError, &structured); decodeError == nil {
+		if structured.Type != "" && structured.Reason != "" {
+			return structured.Type + ": " + structured.Reason
+		}
+		if structured.Reason != "" {
+			return structured.Reason
+		}
+	}
+
+	const rawErrorLimit = 512
+	if len(rawError) > rawErrorLimit {
+		return string(rawError[:rawErrorLimit]) + "..."
+	}
+
+	return string(rawError)
 }
 
 // messageOfLength builds a log line of about the requested size. The text repeats

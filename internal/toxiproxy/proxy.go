@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -149,15 +150,31 @@ func postJSON(ctx context.Context, path string, body any, operation string) erro
 	requestFailed := response.StatusCode < http.StatusOK ||
 		response.StatusCode >= http.StatusMultipleChoices
 	if requestFailed {
-		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, errorBodyLimitBytes))
+		responseBody, readError := io.ReadAll(io.LimitReader(response.Body, errorBodyLimitBytes))
+		drainError := drainProxyResponse(response.Body)
 
-		return fmt.Errorf(
-			"%s: %s: %s",
-			operation,
-			response.Status,
-			responseBody,
+		return errors.Join(
+			fmt.Errorf("%s: %s: %s", operation, response.Status, responseBody),
+			wrapProxyReadError(readError),
+			drainError,
 		)
 	}
 
+	return drainProxyResponse(response.Body)
+}
+
+func drainProxyResponse(body io.Reader) error {
+	if _, drainError := io.Copy(io.Discard, body); drainError != nil {
+		return fmt.Errorf("drain Toxiproxy response: %w", drainError)
+	}
+
 	return nil
+}
+
+func wrapProxyReadError(readError error) error {
+	if readError == nil {
+		return nil
+	}
+
+	return fmt.Errorf("read Toxiproxy error response: %w", readError)
 }
