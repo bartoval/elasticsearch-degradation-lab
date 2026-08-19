@@ -42,8 +42,9 @@ cleanly, the complete scenario directory remains available for inspection.
 
 ## Working on the code
 
-Go 1.26 or newer, and one dependency beyond the standard library. Run from source
-without installing anything:
+Go 1.26 or newer, and one dependency beyond the standard library. Activate the
+Node.js version from the Kibana checkout with `nvm use`, then run these commands
+from the root of this repository without installing anything:
 
 ```bash
 go run ./cmd/elasticsearch-degradation-lab validate scenarios/1remote__slow25s.yml
@@ -51,7 +52,9 @@ go run ./cmd/elasticsearch-degradation-lab up scenarios/1remote__slow25s.yml
 ```
 
 `validate` starts no processes, so it is the fast loop while changing the schema.
-`up` needs the Kibana checkout and takes minutes, so it is the slow one.
+`up` needs the bootstrapped Kibana checkout and takes minutes, so it is the slow
+one. Pass `--kibana-dir /path/to/kibana` unless the checkout is at `../kibana`
+relative to this repository.
 
 ### Where things live
 
