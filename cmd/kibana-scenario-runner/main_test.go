@@ -30,3 +30,23 @@ func TestLoadArchiveScenarioComposesCCSMultiplicationAndFaults(testContext *test
 		testContext.Fatalf("unexpected composed scenario: %+v", loadedScenario)
 	}
 }
+
+func TestPlayAndStopRejectInvalidArguments(testContext *testing.T) {
+	testCases := []struct {
+		name      string
+		arguments []string
+	}{
+		{name: "missing play scenario", arguments: []string{"play"}},
+		{name: "unknown play option", arguments: []string{"play", "local__rows500k", "--unknown"}},
+		{name: "missing checkout path", arguments: []string{"play", "local__rows500k", "--kibana-dir"}},
+		{name: "extra stop arguments", arguments: []string{"stop", "local__rows500k", "extra"}},
+	}
+
+	for _, testCase := range testCases {
+		testContext.Run(testCase.name, func(testContext *testing.T) {
+			if exitCode := run(testCase.arguments); exitCode != exitInvalidArguments {
+				testContext.Fatalf("exit code = %d, want %d", exitCode, exitInvalidArguments)
+			}
+		})
+	}
+}

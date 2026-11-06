@@ -8,8 +8,11 @@ File names follow `<topology>__<degradation>[__<fixture>].yml`, and the `id` ins
 is the same name with `__` replaced by `_`. Run one by name:
 
 ```bash
-kibana-scenario-runner up 1remote__slow25s --kibana-dir /path/to/kibana
+kibana-scenario-runner play 1remote__slow25s --kibana-dir /path/to/kibana
 ```
+
+The scenario runs in the background. Run `kibana-scenario-runner stop` from any
+working directory to stop it.
 
 To make your own, copy [`1remote__slow25s.yml`](1remote__slow25s.yml) and pass its
 path instead of a name.

@@ -17,6 +17,8 @@ import (
 
 const usage = `Usage:
   kibana-scenario-runner validate <scenario-name|scenario.yml>
+  kibana-scenario-runner play <scenario-name|scenario.yml> [--kibana-dir <path>]
+  kibana-scenario-runner stop [scenario-name|scenario.yml]
   kibana-scenario-runner up <scenario-name|scenario.yml> [--kibana-dir <path>]
   kibana-scenario-runner --help`
 
@@ -63,17 +65,31 @@ func run(args []string) int {
 		}
 
 		return runValidateCommand(args[1])
-	case "up":
+	case "up", "play":
 		if len(args) < 2 {
 			return reportInvalidArguments(fmt.Errorf("missing scenario name or path for %s", command))
 		}
 
-		kibanaDirectory, optionsError := parseUpOptions(args[2:])
+		kibanaDirectory, optionsError := parseStartOptions(command, args[2:])
 		if optionsError != nil {
 			return reportInvalidArguments(optionsError)
 		}
 
+		if command == "play" {
+			return runPlayCommand(args[1], kibanaDirectory)
+		}
+
 		return runUpCommand(args[1], kibanaDirectory)
+	case "stop":
+		if len(args) > 2 {
+			return reportInvalidArguments(errors.New("unexpected arguments for stop"))
+		}
+
+		if len(args) == 2 {
+			return runStopCommand(args[1])
+		}
+
+		return runStopCommand("")
 	default:
 		return reportInvalidArguments(fmt.Errorf("unknown command %q", command))
 	}
@@ -88,14 +104,14 @@ func reportInvalidArguments(argumentError error) int {
 	return exitInvalidArguments
 }
 
-// parseUpOptions reads the optional Kibana checkout without adding a CLI dependency.
-func parseUpOptions(arguments []string) (string, error) {
+// parseStartOptions reads the optional Kibana checkout without adding a CLI dependency.
+func parseStartOptions(command string, arguments []string) (string, error) {
 	if len(arguments) == 0 {
 		return "", nil
 	}
 
 	if arguments[0] != kibanaDirectoryOption {
-		return "", fmt.Errorf("unknown option %q for up", arguments[0])
+		return "", fmt.Errorf("unknown option %q for %s", arguments[0], command)
 	}
 
 	if len(arguments) == 1 {
@@ -103,7 +119,7 @@ func parseUpOptions(arguments []string) (string, error) {
 	}
 
 	if len(arguments) > 2 {
-		return "", errors.New("unexpected arguments for up")
+		return "", fmt.Errorf("unexpected arguments for %s", command)
 	}
 
 	return arguments[1], nil
@@ -125,58 +141,68 @@ func runValidateCommand(scenarioReference string) int {
 
 // runUpCommand resolves local paths before starting the scenario infrastructure.
 func runUpCommand(scenarioReference string, configuredKibanaDirectory string) int {
-	loadedScenario, loadError := loadScenario(scenarioReference)
-	if loadError != nil {
-		fmt.Fprintf(os.Stderr, "scenario validation failed: %v\n", loadError)
+	options, optionsError := resolveStartOptions(scenarioReference, configuredKibanaDirectory)
+	if optionsError != nil {
+		fmt.Fprintln(os.Stderr, optionsError)
 
 		return exitFailure
 	}
-
-	projectDirectory, workingDirectoryError := os.Getwd()
-	if workingDirectoryError != nil {
-		fmt.Fprintf(os.Stderr, "read project directory: %v\n", workingDirectoryError)
-
-		return exitFailure
-	}
-
-	kibanaDirectory := configuredKibanaDirectory
-	if kibanaDirectory == "" {
-		kibanaDirectory = filepath.Join(projectDirectory, "..", "kibana")
-	}
-
-	absoluteKibanaDirectory, pathError := filepath.Abs(kibanaDirectory)
-	if pathError != nil {
-		fmt.Fprintf(os.Stderr, "resolve Kibana directory: %v\n", pathError)
-
-		return exitFailure
-	}
-
-	kibanaDirectory = absoluteKibanaDirectory
 
 	// Convert Ctrl+C and SIGTERM into cancellation for startup and the active wait.
 	// The environment owns child shutdown separately so it can preserve stop order.
-	runContext, stopSignals := signal.NotifyContext(
+	signalContext, stopSignals := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
 		syscall.SIGTERM,
 	)
 	defer stopSignals()
+	runContext, cancelRun := context.WithCancel(signalContext)
+	defer cancelRun()
 
-	environment, startError := runner.Start(runContext, runner.Options{
-		Scenario:         loadedScenario,
-		KibanaDirectory:  kibanaDirectory,
-		RuntimeDirectory: filepath.Join(projectDirectory, ".runtime"),
-		ReportProgress: func(message string) {
-			fmt.Fprintf(os.Stdout, "[progress] %s\n", message)
-		},
-	})
+	logPath := filepath.Dir(backgroundLogPath(options))
+	if os.Getenv(backgroundEnvironment) == "1" {
+		logPath = backgroundLogPath(options)
+	}
+
+	state := scenarioState{
+		ScenarioID: options.Scenario.ID,
+		LogPath:    logPath,
+	}
+	control, readyFile, controlError := startCommandControl(scenarioControlDirectory(), state, cancelRun)
+	if controlError != nil {
+		fmt.Fprintln(os.Stderr, controlError)
+
+		return exitFailure
+	}
+
+	if readyFile != nil {
+		defer readyFile.Close()
+	}
+
+	environment, startError := runner.Start(runContext, options)
 	if startError != nil {
+		completionError := startError
+		if startError == runContext.Err() {
+			completionError = nil
+		}
+
+		if closeError := control.close(completionError); closeError != nil {
+			return reportStartupFailure(runContext, errors.Join(startError, closeError))
+		}
+
 		return reportStartupFailure(runContext, startError)
 	}
 
-	announceReady(loadedScenario.Name)
+	announceReady(options.Scenario.Name)
+	readyError := notifyBackgroundReady(readyFile)
+	if readyError != nil {
+		cancelRun()
+	}
 
 	waitError := environment.Wait(runContext)
+	if readyError != nil {
+		waitError = errors.Join(readyError, waitError)
+	}
 
 	// Restore default signal handling, so a second Ctrl+C still works if the
 	// teardown that follows turns out to be slow.
@@ -184,6 +210,7 @@ func runUpCommand(scenarioReference string, configuredKibanaDirectory string) in
 
 	fmt.Fprintln(os.Stdout, "\n[progress] Stopping scenario infrastructure")
 	stopError := environment.Stop()
+	stopError = errors.Join(stopError, control.close(errors.Join(waitError, stopError)))
 
 	exitCode := exitSuccess
 	if waitError != nil {
@@ -222,7 +249,7 @@ func announceReady(scenarioName string) {
 	fmt.Fprintf(os.Stdout, "\nScenario %q infrastructure is ready.\n", scenarioName)
 	fmt.Fprintln(os.Stdout, "Elasticsearch and fixtures are ready, and the scenario is active.")
 	fmt.Fprintln(os.Stdout, "\nStart Kibana separately using your normal development command.")
-	fmt.Fprintln(os.Stdout, "\nPress Ctrl+C here to stop the environment.")
+	fmt.Fprintln(os.Stdout, "\nRun kibana-scenario-runner stop to stop the environment.")
 }
 
 // reportStartupFailure treats user cancellation consistently throughout scenario preparation.
@@ -249,4 +276,37 @@ func reportUnexpectedExit(waitError error) int {
 	}
 
 	return exitFailure
+}
+
+func resolveStartOptions(scenarioReference string, configuredKibanaDirectory string) (runner.Options, error) {
+	loadedScenario, loadError := loadScenario(scenarioReference)
+	if loadError != nil {
+		return runner.Options{}, fmt.Errorf("scenario validation failed: %w", loadError)
+	}
+
+	projectDirectory, workingDirectoryError := os.Getwd()
+	if workingDirectoryError != nil {
+		return runner.Options{}, fmt.Errorf("read project directory: %w", workingDirectoryError)
+	}
+
+	kibanaDirectory := configuredKibanaDirectory
+	if kibanaDirectory == "" {
+		kibanaDirectory = filepath.Join(projectDirectory, "..", "kibana")
+	}
+
+	absoluteKibanaDirectory, pathError := filepath.Abs(kibanaDirectory)
+	if pathError != nil {
+		return runner.Options{}, fmt.Errorf("resolve Kibana directory: %w", pathError)
+	}
+
+	return runner.Options{
+		Scenario:         loadedScenario,
+		KibanaDirectory:  absoluteKibanaDirectory,
+		RuntimeDirectory: filepath.Join(projectDirectory, ".runtime"),
+		ReportProgress:   reportProgress,
+	}, nil
+}
+
+func reportProgress(message string) {
+	fmt.Fprintf(os.Stdout, "[progress] %s\n", message)
 }

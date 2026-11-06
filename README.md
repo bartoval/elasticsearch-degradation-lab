@@ -38,13 +38,25 @@ Get the binary in one of three ways:
 Then start a scenario:
 
 ```bash
-kibana-scenario-runner up 1remote__slow25s --kibana-dir /path/to/kibana
+kibana-scenario-runner play 1remote__slow25s --kibana-dir /path/to/kibana
 ```
 
-`--kibana-dir` defaults to `../kibana`. Once you see
-`Scenario "..." infrastructure is ready.`, start Kibana as usual (`yarn start`) in
-another terminal. `Ctrl+C` stops Elasticsearch and Toxiproxy; Kibana is yours to
-stop.
+`--kibana-dir` defaults to `../kibana`. `play` waits until the infrastructure is
+ready, then returns while the scenario keeps running in the background. Start
+Kibana as usual (`pnpm start`) against that environment.
+
+Stop the scenario from any working directory:
+
+```bash
+kibana-scenario-runner stop
+```
+
+`stop` waits for Elasticsearch and Toxiproxy to shut down and cleanup to finish;
+Kibana is yours to stop. You can pass a scenario name or YAML path to stop only
+that scenario. One scenario can run per user because the ports are shared.
+
+Use `up` instead of `play` to keep the runner in the foreground and stop it with
+`Ctrl+C`. During `play` startup, `Ctrl+C` cancels preparation and cleans up.
 
 ## Ports
 
@@ -127,10 +139,10 @@ Options a preset does not read are rejected. `es_archive` uses the checkout's
 running Kibana. `multiply_documents` needs a concrete source index created by an
 earlier fixture (no aliases or data streams).
 
-For archive fixtures, `up` checks the directory, Node.js, and the checkout's API
-before starting Toxiproxy or Elasticsearch. Archive fixture names must be unique
-across targets because each writes `logs/fixture-<name>.log`. Loader credentials
-are passed through its environment. `validate` checks YAML only.
+For archive fixtures, `play` and `up` check the directory, Node.js, and the
+checkout's API before starting Toxiproxy or Elasticsearch. Archive fixture names
+must be unique across targets because each writes `logs/fixture-<name>.log`.
+Loader credentials are passed through its environment. `validate` checks YAML only.
 
 ### Faults
 
@@ -141,10 +153,17 @@ are passed through its environment. `validate` checks YAML only.
 
 ## Logs and cleanup
 
-Everything lives under `.runtime/` in the directory you run from. Logs are in
-`.runtime/<id>/logs/` and survive a clean stop; the per-run Elasticsearch data is
+Scenario data and logs live under `.runtime/` in the directory you run from. Logs are in
+`.runtime/<id>/logs/`; `play` writes startup progress and runner output to
+`runner.log` there. Logs survive a clean stop; the per-run Elasticsearch data is
 deleted. Toxiproxy is cached in `.runtime/tools/`, and the Elasticsearch snapshot
 in the Kibana checkout's `.es/cache`.
+
+Control files live in the private directory `/tmp/kibana-scenario-runner-<uid>/`,
+so `stop` can find the scenario from another directory. If a background component
+fails, the runner cleans up and saves the failure there; the next `stop` reports
+the cause and log path. A timeout while waiting for `stop` leaves shutdown running
+in the background.
 
 ## Development
 

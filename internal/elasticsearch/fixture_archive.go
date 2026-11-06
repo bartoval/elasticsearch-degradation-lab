@@ -107,7 +107,7 @@ func (node *Node) ApplyArchive(ctx context.Context, kibanaDirectory string, arch
 			"load Elasticsearch archive %q: %w\nRecent log:\n%s\nFull log: %s",
 			archivePath,
 			loadError,
-			recentLog(logPath),
+			process.RecentLog(logPath),
 			logPath,
 		)
 	}

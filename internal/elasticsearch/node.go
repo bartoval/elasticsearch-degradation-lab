@@ -41,8 +41,6 @@ const (
 	portReleaseTimeout  = 10 * time.Second
 	portReleaseInterval = 100 * time.Millisecond
 
-	recentLogBytes = 4 * 1024
-
 	// errorBodyLimitBytes keeps a failed response quotable without admitting an
 	// unexpected body into the error message whole.
 	errorBodyLimitBytes = 8 * 1024
@@ -208,7 +206,7 @@ func (node *Node) WaitUntilReady(ctx context.Context, reportProgress func(string
 				"Elasticsearch %s exited before becoming ready: %v\nRecent log:\n%s\nFull log: %s",
 				node.id,
 				node.child.Wait(),
-				recentLog(node.logPath),
+				process.RecentLog(node.logPath),
 				node.logPath,
 			)
 		case <-timeout.C:
@@ -337,23 +335,9 @@ func createLogFile(logPath string) (*os.File, error) {
 	return logFile, nil
 }
 
-// recentLog keeps only enough process output to explain a startup failure.
-func recentLog(logPath string) string {
-	contents, readError := os.ReadFile(logPath)
-	if readError != nil {
-		return "unable to read log: " + readError.Error()
-	}
-
-	if len(contents) > recentLogBytes {
-		contents = contents[len(contents)-recentLogBytes:]
-	}
-
-	return strings.TrimSpace(string(contents))
-}
-
 // latestLogLine shows whether Kibana is downloading, extracting, or starting Elasticsearch.
 func latestLogLine(logPath string) string {
-	lines := strings.Split(recentLog(logPath), "\n")
+	lines := strings.Split(process.RecentLog(logPath), "\n")
 
 	return strings.TrimSpace(lines[len(lines)-1])
 }
