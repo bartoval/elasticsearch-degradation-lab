@@ -16,9 +16,9 @@ import (
 )
 
 const usage = `Usage:
-  elasticsearch-degradation-lab validate <scenario-name|scenario.yml>
-  elasticsearch-degradation-lab up <scenario-name|scenario.yml> [--kibana-dir <path>]
-  elasticsearch-degradation-lab --help`
+  kibana-scenario-runner validate <scenario-name|scenario.yml>
+  kibana-scenario-runner up <scenario-name|scenario.yml> [--kibana-dir <path>]
+  kibana-scenario-runner --help`
 
 const (
 	exitSuccess          = 0

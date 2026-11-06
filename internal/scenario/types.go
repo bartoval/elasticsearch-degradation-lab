@@ -18,10 +18,12 @@ const (
 type FixturePreset string
 
 const (
-	FixturePresetMinimalLogs   FixturePreset = "minimal_logs"
-	FixturePresetMinimalLookup FixturePreset = "minimal_lookup"
-	FixturePresetBulkLogs      FixturePreset = "bulk_logs"
-	FixturePresetBulkDocuments FixturePreset = "bulk_documents"
+	FixturePresetMinimalLogs       FixturePreset = "minimal_logs"
+	FixturePresetMinimalLookup     FixturePreset = "minimal_lookup"
+	FixturePresetBulkLogs          FixturePreset = "bulk_logs"
+	FixturePresetBulkDocuments     FixturePreset = "bulk_documents"
+	FixturePresetESArchive         FixturePreset = "es_archive"
+	FixturePresetMultiplyDocuments FixturePreset = "multiply_documents"
 )
 
 const (
@@ -31,6 +33,7 @@ const (
 	MaxBulkDocuments     = 5000000
 	MaxFieldsPerDocument = 900
 	MaxMessageBytes      = 65536
+	MaxDocumentCopies    = 100
 )
 
 // Scenario describes the infrastructure, test data, and network faults in YAML.
@@ -89,6 +92,9 @@ type Fixture struct {
 	FieldsPerDocument int           `yaml:"fieldsPerDocument"`
 	MessageBytes      int           `yaml:"messageBytes"`
 	TimeRange         string        `yaml:"timeRange"`
+	Archive           string        `yaml:"archive"`
+	Source            string        `yaml:"source"`
+	Copies            int           `yaml:"copies"`
 }
 
 // Fault describes a network degradation applied to a scenario target.

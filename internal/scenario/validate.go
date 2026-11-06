@@ -3,6 +3,7 @@ package scenario
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -183,6 +184,8 @@ func validateRemotes(remotes []Remote) (map[string]bool, error) {
 // validateFixtures rejects data setups the runner cannot create, and knobs asked of
 // a preset that does not read them.
 func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
+	archiveNames := make(map[string]bool)
+
 	for fixtureIndex, fixture := range fixtures {
 		if !targets[fixture.Target] {
 			return fmt.Errorf(
@@ -210,7 +213,9 @@ func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
 		presetIsSupported := fixture.Preset == FixturePresetMinimalLogs ||
 			fixture.Preset == FixturePresetMinimalLookup ||
 			fixture.Preset == FixturePresetBulkLogs ||
-			fixture.Preset == FixturePresetBulkDocuments
+			fixture.Preset == FixturePresetBulkDocuments ||
+			fixture.Preset == FixturePresetESArchive ||
+			fixture.Preset == FixturePresetMultiplyDocuments
 		if !presetIsSupported {
 			return fmt.Errorf(
 				"fixtures[%d].preset %q is not supported",
@@ -222,6 +227,18 @@ func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
 		if knobError := validateFixtureKnobs(fixtureIndex, fixture); knobError != nil {
 			return knobError
 		}
+
+		if fixture.Preset == FixturePresetESArchive {
+			if archiveNames[fixture.Name] {
+				return fmt.Errorf(
+					"fixtures[%d].name %q is duplicated for archive logs",
+					fixtureIndex,
+					fixture.Name,
+				)
+			}
+
+			archiveNames[fixture.Name] = true
+		}
 	}
 
 	return nil
@@ -230,7 +247,54 @@ func validateFixtures(fixtures []Fixture, targets map[string]bool) error {
 // validateFixtureKnobs checks that a fixture asks only for the sizing its preset
 // reads, so that a scenario never declares a number that silently does nothing.
 func validateFixtureKnobs(fixtureIndex int, fixture Fixture) error {
+	if fixture.Archive != "" && fixture.Preset != FixturePresetESArchive {
+		return fmt.Errorf(
+			"fixtures[%d].archive applies to preset %q only",
+			fixtureIndex,
+			FixturePresetESArchive,
+		)
+	}
+
+	if (fixture.Source != "" || fixture.Copies != 0) && fixture.Preset != FixturePresetMultiplyDocuments {
+		return fmt.Errorf(
+			"fixtures[%d].source and copies apply to preset %q only",
+			fixtureIndex,
+			FixturePresetMultiplyDocuments,
+		)
+	}
+
+	if fixture.Preset == FixturePresetESArchive || fixture.Preset == FixturePresetMultiplyDocuments {
+		if fixture.DataStreams != 0 || fixture.FieldsPerStream != 0 ||
+			fixture.Documents != 0 || fixture.FieldsPerDocument != 0 ||
+			fixture.MessageBytes != 0 || fixture.TimeRange != "" {
+			return fmt.Errorf("fixtures[%d] sizing applies to the bulk presets only", fixtureIndex)
+		}
+	}
+
 	switch fixture.Preset {
+	case FixturePresetESArchive:
+		if strings.TrimSpace(fixture.Archive) == "" {
+			return fmt.Errorf("fixtures[%d].archive is required", fixtureIndex)
+		}
+
+		return nil
+	case FixturePresetMultiplyDocuments:
+		if !resourceNamePattern.MatchString(fixture.Source) || len(fixture.Source) > 255 {
+			return fmt.Errorf(
+				"fixtures[%d].source must be one lowercase Elasticsearch index name up to 255 characters",
+				fixtureIndex,
+			)
+		}
+
+		if fixture.Source == fixture.Name {
+			return fmt.Errorf("fixtures[%d].source must differ from name", fixtureIndex)
+		}
+
+		if fixture.Copies < 1 || fixture.Copies > MaxDocumentCopies {
+			return fmt.Errorf("fixtures[%d].copies must be between 1 and %d", fixtureIndex, MaxDocumentCopies)
+		}
+
+		return nil
 	case FixturePresetBulkLogs:
 		if fixture.Documents != 0 || fixture.FieldsPerDocument != 0 ||
 			fixture.MessageBytes != 0 || fixture.TimeRange != "" {

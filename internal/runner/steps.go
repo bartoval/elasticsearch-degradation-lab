@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/bartoval/elasticsearch-degradation-lab/internal/elasticsearch"
@@ -205,12 +206,12 @@ func waitForElasticsearch(
 // applyFixtures sends each data preset to the target selected by the scenario.
 func applyFixtures(
 	ctx context.Context,
-	fixtures []scenario.Fixture,
+	options Options,
+	sessionDirectory string,
 	coordinatorNode *elasticsearch.Node,
 	remoteNode *elasticsearch.Node,
-	reportProgress func(string),
 ) error {
-	for _, fixture := range fixtures {
+	for _, fixture := range options.Scenario.Fixtures {
 		targetNode := remoteNode
 		if fixture.Target == scenario.CoordinatorTarget {
 			targetNode = coordinatorNode
@@ -220,11 +221,29 @@ func applyFixtures(
 			return fmt.Errorf("fixture target %q is not configured", fixture.Target)
 		}
 
-		reportProgress(fixtureDescription(fixture))
+		options.ReportProgress(fixtureDescription(fixture))
 
 		var fixtureError error
 
 		switch fixture.Preset {
+		case scenario.FixturePresetESArchive:
+			fixtureError = targetNode.ApplyArchive(
+				ctx,
+				options.KibanaDirectory,
+				fixture.Archive,
+				filepath.Join(sessionDirectory, "logs", "fixture-"+fixture.Name+".log"),
+			)
+		case scenario.FixturePresetMultiplyDocuments:
+			fixtureError = targetNode.ApplyMultipliedDocuments(
+				ctx,
+				fixture.Name,
+				elasticsearch.DocumentMultiplication{
+					Source:       fixture.Source,
+					Copies:       fixture.Copies,
+					MaxDocuments: scenario.MaxBulkDocuments,
+				},
+				options.ReportProgress,
+			)
 		case scenario.FixturePresetMinimalLogs:
 			fixtureError = targetNode.ApplyMinimalLogs(ctx, fixture.Name)
 		case scenario.FixturePresetMinimalLookup:
@@ -253,7 +272,7 @@ func applyFixtures(
 					MessageBytes:      fixture.MessageBytes,
 					TimeRange:         timeRange,
 				},
-				reportProgress,
+				options.ReportProgress,
 			)
 		case scenario.FixturePresetBulkLogs:
 			fixtureError = targetNode.ApplyBulkLogs(
@@ -261,7 +280,7 @@ func applyFixtures(
 				fixture.Name,
 				fixture.DataStreams,
 				fixture.FieldsPerStream,
-				reportProgress,
+				options.ReportProgress,
 			)
 		default:
 			return fmt.Errorf("fixture preset %q is not supported", fixture.Preset)
@@ -284,6 +303,22 @@ func applyFixtures(
 // takes long enough that its cost should be visible before it starts.
 func fixtureDescription(fixture scenario.Fixture) string {
 	switch fixture.Preset {
+	case scenario.FixturePresetESArchive:
+		return fmt.Sprintf(
+			"Applying fixture %s to %s (archive %s)",
+			fixture.Preset,
+			fixture.Target,
+			fixture.Archive,
+		)
+	case scenario.FixturePresetMultiplyDocuments:
+		return fmt.Sprintf(
+			"Applying fixture %s to %s (%d copies of %s into %s)",
+			fixture.Preset,
+			fixture.Target,
+			fixture.Copies,
+			fixture.Source,
+			fixture.Name,
+		)
 	case scenario.FixturePresetBulkLogs:
 		return fmt.Sprintf(
 			"Applying fixture %s to %s (%d data streams, %d fields each)",

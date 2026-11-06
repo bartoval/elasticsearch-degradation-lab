@@ -3,12 +3,73 @@ package runner
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bartoval/elasticsearch-degradation-lab/internal/scenario"
 )
+
+func TestStartRejectsMissingArchiveBeforeInfrastructurePreparation(testContext *testing.T) {
+	originalTransport := http.DefaultTransport
+	transport := &archivePreflightTransport{}
+	http.DefaultTransport = transport
+	testContext.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	runtimeDirectory := filepath.Join(testContext.TempDir(), "runtime")
+	environment, startError := Start(context.Background(), Options{
+		Scenario: scenario.Scenario{
+			Version: 1,
+			ID:      "local_archive",
+			Name:    "Local archive",
+			Fixtures: []scenario.Fixture{{
+				Target:  scenario.CoordinatorTarget,
+				Preset:  scenario.FixturePresetESArchive,
+				Name:    "seed",
+				Archive: "missing-archive",
+			}},
+		},
+		KibanaDirectory:  testContext.TempDir(),
+		RuntimeDirectory: runtimeDirectory,
+	})
+	if environment != nil || startError == nil || !strings.Contains(startError.Error(), "find Elasticsearch archive") {
+		testContext.Fatalf("expected archive preparation failure, got environment=%v error=%v", environment, startError)
+	}
+
+	if transport.called {
+		testContext.Fatal("infrastructure download was attempted before archive validation")
+	}
+
+	if _, statError := os.Stat(runtimeDirectory); !os.IsNotExist(statError) {
+		testContext.Fatalf("runtime created before archive validation: %v", statError)
+	}
+}
+
+func TestStartPreservesCancellationDuringArchiveCheck(testContext *testing.T) {
+	ctx, cancelStart := context.WithCancel(context.Background())
+	cancelStart()
+
+	environment, startError := Start(ctx, Options{
+		Scenario: scenario.Scenario{
+			Version: 1,
+			ID:      "local_archive",
+			Name:    "Local archive",
+			Fixtures: []scenario.Fixture{{
+				Target:  scenario.CoordinatorTarget,
+				Preset:  scenario.FixturePresetESArchive,
+				Name:    "seed",
+				Archive: ".",
+			}},
+		},
+		KibanaDirectory: testContext.TempDir(),
+	})
+	if environment != nil || startError != context.Canceled {
+		testContext.Fatalf("expected startup cancellation, got environment=%v error=%v", environment, startError)
+	}
+}
 
 func TestCleanupSessionElasticsearchPreservesOperatorLogs(t *testing.T) {
 	t.Parallel()
@@ -158,4 +219,14 @@ func TestStopUsesReverseStartupOrderAndPreservesRuntimeOnFailure(t *testing.T) {
 	if len(stopped) != len(components) {
 		t.Fatalf("repeated stop invoked components again: %v", stopped)
 	}
+}
+
+type archivePreflightTransport struct {
+	called bool
+}
+
+func (transport *archivePreflightTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	transport.called = true
+
+	return nil, errors.New("unexpected request before archive preparation")
 }

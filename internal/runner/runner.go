@@ -63,6 +63,20 @@ func Start(ctx context.Context, options Options) (*Environment, error) {
 		return nil, fmt.Errorf("validate scenario: %w", validationError)
 	}
 
+	for _, fixture := range options.Scenario.Fixtures {
+		if fixture.Preset != scenario.FixturePresetESArchive {
+			continue
+		}
+
+		if archiveError := elasticsearch.CheckArchive(ctx, options.KibanaDirectory, fixture.Archive); archiveError != nil {
+			if ctx.Err() != nil && errors.Is(archiveError, ctx.Err()) {
+				return nil, ctx.Err()
+			}
+
+			return nil, fmt.Errorf("prepare archive fixture %q: %w", fixture.Name, archiveError)
+		}
+	}
+
 	sessionDirectory := filepath.Join(options.RuntimeDirectory, options.Scenario.ID)
 	toxiproxyLog := filepath.Join(sessionDirectory, "logs", "toxiproxy.log")
 
@@ -236,10 +250,10 @@ func (environment *Environment) build(
 
 	fixtureError := applyFixtures(
 		ctx,
-		options.Scenario.Fixtures,
+		options,
+		sessionDirectory,
 		coordinatorNode,
 		remoteNode,
-		options.ReportProgress,
 	)
 	if fixtureError != nil {
 		return fixtureError

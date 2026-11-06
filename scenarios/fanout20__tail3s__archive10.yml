@@ -1,0 +1,40 @@
+# INFRA: 20 CCS aliases, alias #20 at 3s, logstash_functional ES archive on
+# the remote, and 10 copies of one archived index in logstash-expanded.
+#
+# USE CASES (pick any):
+#   - Reusing a Kibana ES archive as the source of a larger dataset
+#   - Combining document volume, CCS fan-out, and one slow remote alias
+#
+# COST: loads the archive, then indexes 10 times the source document count.
+# Both steps are repeated on every start. The archive comes from the selected
+# bootstrapped Kibana checkout and requires EsArchiver dataOnly support.
+# Timestamps remain in September 2015; select the matching range in Kibana.
+
+version: 1
+id: fanout20_tail3s_archive10
+name: Fan-out 20, tail 3s, archived logs copied 10 times
+
+topology:
+  remotes:
+    - id: remote-1
+      alias: archive-logs
+      aliasCount: 20
+      skipUnavailable: true
+
+fixtures:
+  - target: remote-1
+    preset: es_archive
+    name: logstash-seed
+    archive: src/platform/test/functional/fixtures/es_archiver/logstash_functional
+  - target: remote-1
+    preset: multiply_documents
+    name: logstash-expanded
+    source: logstash-2015.09.22
+    copies: 10
+
+faults:
+  - id: slowest-region
+    target: remote-1
+    aliasPosition: 20
+    type: latency
+    latencyMs: 3000
